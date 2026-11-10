@@ -458,3 +458,19 @@ h1, h2, h3, p { margin: 0; }
   .ball-owner { display: none; }
   .give-ball-button span { display: none; }
 }
+
+/* Compact studio analysis tools. Keep the pitch dominant. */
+.shape-control, .unit-control { flex-shrink: 0; padding-left: 9px; }
+.shape-control select, .unit-control select { max-width: 138px; }
+.stage-actions { overflow-x: auto; scrollbar-width: thin; }
+.option-controls { flex-wrap: wrap; }
+.options-bar .tool-context { flex: 1 1 auto; }
+.movement-help, .selection-count { font-size: 11px; color: #bac9c4; max-width: 275px; line-height: 1.35; }
+.selection-count { color: var(--accent); font-weight: 700; }
+.board-editor--move [data-player], .board-editor--select [data-player] { cursor: grab; }
+.board-editor--move [data-player]:active, .board-editor--select [data-player]:active { cursor: grabbing; }
+.board-editor--move, .board-editor--measure { cursor: crosshair; }
+@media (max-width: 1100px) {
+  .movement-help, .selection-count { display: none; }
+  .shape-control select { max-width: 108px; }
+}

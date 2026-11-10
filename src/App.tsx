@@ -2,8 +2,8 @@ import { useEffect, useReducer, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import {
   ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, ChevronDown, CircleDot, Copy,
-  Eraser, Eye, EyeOff, FileUp, FolderOpen, ImagePlus, Layers2, Maximize, MousePointer2, PanelRight,
-  Pause, Pencil, Play, Plus, Radio, Redo2, RotateCcw, Route, Save, Scan, Send, Square, Tags, Trash2, Undo2, UsersRound, X,
+  Eraser, Eye, EyeOff, FileUp, FolderOpen, ImagePlus, Layers2, Maximize, MousePointer2, Move, PanelRight,
+  Pause, Pencil, Play, Plus, Radio, Redo2, RotateCcw, Route, Ruler, Save, Scan, Send, Square, Tags, Trash2, Undo2, UsersRound, X,
 } from 'lucide-react'
 import { BoardEditor, restyleMark } from './BoardEditor'
 import type { BoardOptions, BoardSelection, BoardTool } from './BoardEditor'
@@ -14,18 +14,21 @@ import { Modal } from './Modal'
 import { mergeMatchEvents } from './match'
 import type { Substitution } from './match'
 import { exportBoard } from './export'
+import { clearMovementTargets, selectedUnit } from './tactics'
 import { hasPlayableMovement, projectPlayback } from './playback'
 import { importStill, makeBoard, makeScene, newId, removeStill, syncPlayers, updateMatch } from './model'
 import type { Board, Scene, View } from './model'
 import { deleteBoard, lastBoardId, listBoards, openBoard, readStill, rememberBoard, saveBoard } from './storage'
 
 const tools = [
-  { id: 'select', key: 'v', label: 'Select', icon: MousePointer2, hint: 'Drag to move · Shift to select multiple players' },
+  { id: 'select', key: 'v', label: 'Select', icon: MousePointer2, hint: 'Drag one or several selected players · Shift-click or box-select' },
+  { id: 'move', key: 'm', label: 'Move', icon: Move, hint: 'Drag a player or group to set a destination — no arrows' },
   { id: 'run', key: 'r', label: 'Run', icon: ArrowUpRight, hint: 'Drag from the start to the end of the run' },
   { id: 'pass', key: 'p', label: 'Pass', icon: Send, hint: 'Drag between players or open spaces' },
   { id: 'carry', key: 'c', label: 'Carry', icon: Route, hint: 'Drag to show movement with the ball' },
   { id: 'draw', key: 'd', label: 'Draw', icon: Pencil, hint: 'Draw directly on the board' },
   { id: 'shape', key: 's', label: 'Shape', icon: Square, hint: 'Drag to draw a zone or defensive line' },
+  { id: 'measure', key: 'k', label: 'Distance', icon: Ruler, hint: 'Drag between positions to measure distance' },
   { id: 'highlight', key: 'h', label: 'Highlight', icon: Scan, hint: 'Tap to spotlight, or drag to resize' },
   { id: 'erase', key: 'e', label: 'Erase', icon: Eraser, hint: 'Tap a mark to erase it' },
   { id: 'ball', key: 'b', label: 'Ball', icon: CircleDot, hint: 'Tap a player to attach · Drag the ball to move it' },
@@ -122,6 +125,7 @@ export function App() {
   const [teamPanel, setTeamPanel] = useState(() => window.matchMedia('(min-width: 1100px)').matches)
   const [tool, setTool] = useState<BoardTool>('select')
   const [selection, setSelection] = useState<BoardSelection>({ players: [] })
+  const [groupSelect, setGroupSelect] = useState<{ ids: string[]; nonce: number }>()
   const [options, setOptions] = useState<BoardOptions>({
     colour: inks[0].colour, style: 'solid', curved: false, drawMode: 'freehand', shapeMode: 'zone', group: false,
   })
@@ -139,13 +143,22 @@ export function App() {
   const dirty = board !== saved && (saved !== undefined || history.past.length > 0 || board.updatedAt > 0)
   const selectedMark = scene.marks.find((mark) => mark.id === selection.annotation)
   const activeTool = tools.find((item) => item.id === tool)!
-  const optionsVisible = !['ball', 'erase'].includes(tool)
+  const optionsVisible = !['ball', 'erase', 'move'].includes(tool)
   const arrowTool = tool === 'run' || tool === 'pass' || tool === 'carry'
   const arrowSelected = tool === 'select' && (selectedMark?.kind === 'run' || selectedMark?.kind === 'pass' || selectedMark?.kind === 'carry')
   const canPlay = scene.players.length > 0 && hasPlayableMovement(scene)
   const playbackScene = playback.mode === 'stopped' ? scene : projectPlayback(scene, playback.progress)
   const selectedPlayer = selection.players.length === 1 ? scene.players.find(player => player.id === selection.players[0]) : undefined
   const carrier = scene.players.find(player => player.id === scene.ball?.playerId)
+  const plannedMoves = Object.keys(scene.motionTargets ?? {}).length
+
+  function selectGroup(value: string) {
+    if (!value) return
+    const [side, unit] = value.split('-') as ['home' | 'away', 'all' | 'defence' | 'midfield' | 'attack']
+    const ids = selectedUnit(scene, side, unit)
+    if (tool !== 'move') setTool('select')
+    setGroupSelect(current => ({ ids, nonce: (current?.nonce ?? 0) + 1 }))
+  }
 
   // Live motion is a non-destructive preview: no change to board history or saved positions.
   useEffect(() => {
@@ -544,9 +557,21 @@ export function App() {
                 </div>
                 <div className="stage-actions">
                   {!scene.image && <>
+                    <label className="select-shell shape-control" title="Show an editorial team shape with pitch width and depth">
+                      <UsersRound size={14} />
+                      <select aria-label="Team shape overlay" value={scene.shapeTeams ?? 'off'} onChange={event => {
+                        const shapeTeams = event.currentTarget.value as NonNullable<Scene['shapeTeams']>
+                        editScene(item => ({ ...item, shapeTeams }))
+                      }}>
+                        <option value="off">Shapes off</option>
+                        <option value="home">Home shape</option>
+                        <option value="away">Away shape</option>
+                        <option value="both">Both shapes</option>
+                      </select>
+                    </label>
                     <button type="button" className="button primary compact playback-button"
                       onClick={togglePlayback} disabled={!canPlay}
-                      title={canPlay ? 'Preview the drawn player runs and passes' : 'Draw a Run, Carry or Pass arrow to play movement'}
+                      title={canPlay ? 'Preview movements and passes' : 'Use Move or draw a Run, Carry or Pass to play'}
                       aria-label={playback.mode === 'playing' ? 'Pause movement' : playback.progress >= 1 ? 'Replay movement' : 'Play movement'}>
                       {playback.mode === 'playing' ? <Pause size={16} /> : <Play size={16} />}
                       <span>{playback.mode === 'playing' ? 'Pause' : playback.progress >= 1 ? 'Replay' : 'Play'}</span>
@@ -591,7 +616,8 @@ export function App() {
               <div className="stage-frame">
                 <div className="stage-surface" data-tool={playback.mode === 'stopped' ? tool : 'playback'}>
                   {playback.mode === 'stopped'
-                    ? <BoardEditor scene={scene} tool={scene.image && tool === 'ball' ? 'select' : tool} options={options}
+                    ? <BoardEditor scene={scene} tool={scene.image && (tool === 'ball' || tool === 'move') ? 'select' : tool} options={options}
+                        groupSelect={groupSelect}
                         onCommit={(next) => editScene(() => next)}
                         onSelectionChange={setSelection} resetKey={`${board.id}:${scene.id}:${history.revision}`} />
                     : <BoardVisual scene={playbackScene} clean className="playback-preview" />}
@@ -602,7 +628,7 @@ export function App() {
                 <div className="tool-context">
                   {playback.mode !== 'stopped'
                     ? <><Play size={15} /><strong>Movement preview</strong><span>Preview only · Reset restores the setup</span></>
-                    : <><activeTool.icon size={15} /><strong>{activeTool.label}</strong><span>{tool === 'ball' ? 'Tap a player to attach the ball' : selection.players.length > 1 ? `${selection.players.length} players selected` : activeTool.hint}</span></>}
+                    : <><activeTool.icon size={15} /><strong>{activeTool.label}</strong><span>{tool === 'ball' ? 'Tap a player to attach the ball' : selection.players.length > 1 ? `${selection.players.length} selected — drag together` : activeTool.hint}</span></>}
                   {!scene.image && playback.mode === 'stopped' && carrier && <span className="ball-owner">Ball: {carrier.name}</span>}
                 </div>
                 <div className="option-controls">
@@ -613,7 +639,29 @@ export function App() {
                   )}
                   {tool === 'draw' && <select aria-label="Drawing mode" value={options.drawMode} onChange={(event) => setOptions({ ...options, drawMode: event.target.value as BoardOptions['drawMode'] })}><option value="freehand">Freehand</option><option value="line">Line</option></select>}
                   {tool === 'shape' && <select aria-label="Shape mode" value={options.shapeMode} onChange={(event) => setOptions({ ...options, shapeMode: event.target.value as BoardOptions['shapeMode'] })}><option value="zone">Zone</option><option value="line">Line</option></select>}
-                  {tool === 'select' && <button className="button subtle compact" type="button" aria-pressed={options.group} onClick={() => setOptions({ ...options, group: !options.group })}><UsersRound size={15} /> Group</button>}
+                  {(tool === 'select' || tool === 'move') && !scene.image && <>
+                    <label className="select-shell unit-control" title="Select a team or tactical unit and drag all selected players together">
+                      <UsersRound size={14} />
+                      <select aria-label="Select multiple players" value="" onChange={event => selectGroup(event.currentTarget.value)}>
+                        <option value="">Select group</option>
+                        <option value="home-all">Home XI</option>
+                        <option value="home-defence">Home defenders</option>
+                        <option value="home-midfield">Home midfielders</option>
+                        <option value="home-attack">Home forwards</option>
+                        <option value="away-all">Away XI</option>
+                        <option value="away-defence">Away defenders</option>
+                        <option value="away-midfield">Away midfielders</option>
+                        <option value="away-attack">Away forwards</option>
+                      </select>
+                    </label>
+                    {tool === 'select' && <button className="button subtle compact" type="button" aria-pressed={options.group} onClick={() => setOptions({ ...options, group: !options.group })}><UsersRound size={15} /> Add players</button>}
+                    {selection.players.length > 1 && <span className="selection-count">{selection.players.length} selected · drag any one</span>}
+                  </>}
+                  {tool === 'move' && !scene.image && <>
+                    <span className="movement-help">Drag a player to its target. Selected groups move together.</span>
+                    {plannedMoves > 0 && <button className="button subtle compact" type="button"
+                      onClick={() => editScene(item => clearMovementTargets(item))}>Clear moves ({plannedMoves})</button>}
+                  </>}
                   {optionsVisible && (tool !== 'select' || !!selectedMark) && (
                     <>
                       <select aria-label="Line style" value={tool === 'select' && selectedMark ? selectedMark.style : options.style} onChange={(event) => changeInk({ style: event.target.value as BoardOptions['style'] })}>

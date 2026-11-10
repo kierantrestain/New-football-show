@@ -7,7 +7,7 @@ const FORMAT = 'touchline-board'
 const MAX_SIZE = 96 * 1024 * 1024
 const imageData = /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+={0,2}$/i
 const views = new Set<View>(['full', 'attacking', 'defensive', 'penalty', 'own-penalty'])
-const markKinds = new Set<Mark['kind']>(['run', 'pass', 'carry', 'freehand', 'line', 'zone', 'highlight'])
+const markKinds = new Set<Mark['kind']>(['run', 'pass', 'carry', 'freehand', 'line', 'zone', 'highlight', 'distance'])
 const styles = new Set<Mark['style']>(['solid', 'dash', 'dot'])
 
 function requireField(condition: unknown, name: string): asserts condition {
@@ -108,6 +108,10 @@ export function parseBoardFile(input: unknown, id: string, updatedAt: number): B
       minute: integer(raw.minute, 0, 120, 'match minute'), addedTime: integer(raw.addedTime, 0, 30, 'added time'),
       substitutions: sceneChanges(raw.substitutions),
     }
+    if (raw.shapeTeams !== undefined) {
+      requireField(['off', 'home', 'away', 'both'].includes(String(raw.shapeTeams)), 'team shape visibility')
+      base.shapeTeams = raw.shapeTeams as Scene['shapeTeams']
+    }
     if (raw.showPlayerNames !== undefined) {
       requireField(typeof raw.showPlayerNames === 'boolean', 'player name visibility')
       base.showPlayerNames = raw.showPlayerNames
@@ -129,6 +133,18 @@ export function parseBoardFile(input: unknown, id: string, updatedAt: number): B
     }))
     const placed = syncPlayers(base, match)
     placed.players = placed.players.map((player) => ({ ...player, point: positions.get(player.id) ?? player.point }))
+    if (raw.motionTargets !== undefined) {
+      const targets = record(raw.motionTargets, 'movement targets')
+      requireField(Object.keys(targets).length <= 22, 'movement target count')
+      const ids = new Set(placed.players.map(player => player.id))
+      placed.motionTargets = Object.fromEntries(Object.entries(targets).map(([id, target]) => {
+        requireField(ids.has(id), 'movement target player')
+        const destination = point(target)
+        requireField(destination.x >= 0 && destination.x <= 1050 && destination.y >= 0 && destination.y <= 680, 'movement target bounds')
+        return [id, destination]
+      }))
+    }
+    if (raw.ball === null) placed.ball = null
     if (raw.ball !== null) {
       const ball = record(raw.ball, 'ball')
       const holder = placed.players.find((player) => player.id === ball.playerId)
