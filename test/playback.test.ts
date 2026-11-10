@@ -72,3 +72,20 @@ test('uninvolved scene and still-image analysis remain untouched', () => {
   assert.equal(hasPlayableMovement(photo), false)
   assert.strictEqual(projectPlayback(photo, .8), photo)
 })
+
+test('arrow-free destinations animate several players together without creating drawn lines', () => {
+  const scene: Scene = { ...sample, marks: [], motionTargets: {
+    attacker: { x: 380, y: 340 },
+    receiver: { x: 710, y: 340 },
+  } }
+  assert.equal(hasPlayableMovement(scene), true)
+  const midway = projectPlayback(scene, .5)
+  assert.deepEqual(midway.players[0].point, { x: 340, y: 320 })
+  assert.deepEqual(midway.players[1].point, { x: 670, y: 320 })
+  assert.deepEqual(getBallPoint(midway.ball, midway.players), { x: 363, y: 332 })
+  assert.deepEqual(projectPlayback(scene, 1).players.map(p => p.point), [
+    { x: 380, y: 340 }, { x: 710, y: 340 },
+  ])
+  assert.deepEqual(scene.players[0].point, first.point)
+  assert.equal(scene.marks.length, 0)
+})
