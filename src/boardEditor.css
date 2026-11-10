@@ -37,3 +37,7 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+.board-editor--move [data-player], .board-editor--move [data-annotation] { cursor: crosshair; }
+.board-editor--move:active [data-player] { cursor: grabbing; }
+.board-editor--measure { cursor: crosshair; }
