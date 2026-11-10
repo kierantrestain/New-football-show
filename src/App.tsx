@@ -156,7 +156,7 @@ export function App() {
     if (!value) return
     const [side, unit] = value.split('-') as ['home' | 'away', 'all' | 'defence' | 'midfield' | 'attack']
     const ids = selectedUnit(scene, side, unit)
-    setTool('select')
+    if (tool !== 'move') setTool('select')
     setGroupSelect(current => ({ ids, nonce: (current?.nonce ?? 0) + 1 }))
   }
 
@@ -639,7 +639,7 @@ export function App() {
                   )}
                   {tool === 'draw' && <select aria-label="Drawing mode" value={options.drawMode} onChange={(event) => setOptions({ ...options, drawMode: event.target.value as BoardOptions['drawMode'] })}><option value="freehand">Freehand</option><option value="line">Line</option></select>}
                   {tool === 'shape' && <select aria-label="Shape mode" value={options.shapeMode} onChange={(event) => setOptions({ ...options, shapeMode: event.target.value as BoardOptions['shapeMode'] })}><option value="zone">Zone</option><option value="line">Line</option></select>}
-                  {tool === 'select' && !scene.image && <>
+                  {(tool === 'select' || tool === 'move') && !scene.image && <>
                     <label className="select-shell unit-control" title="Select a team or tactical unit and drag all selected players together">
                       <UsersRound size={14} />
                       <select aria-label="Select multiple players" value="" onChange={event => selectGroup(event.currentTarget.value)}>
@@ -654,7 +654,7 @@ export function App() {
                         <option value="away-attack">Away forwards</option>
                       </select>
                     </label>
-                    <button className="button subtle compact" type="button" aria-pressed={options.group} onClick={() => setOptions({ ...options, group: !options.group })}><UsersRound size={15} /> Add players</button>
+                    {tool === 'select' && <button className="button subtle compact" type="button" aria-pressed={options.group} onClick={() => setOptions({ ...options, group: !options.group })}><UsersRound size={15} /> Add players</button>}
                     {selection.players.length > 1 && <span className="selection-count">{selection.players.length} selected · drag any one</span>}
                   </>}
                   {tool === 'move' && !scene.image && <>
