@@ -6,7 +6,7 @@ export type View = 'full' | 'attacking' | 'defensive' | 'penalty' | 'own-penalty
 export type MarkStyle = 'solid' | 'dash' | 'dot'
 export type Mark = {
   id: string
-  kind: 'run' | 'pass' | 'carry' | 'freehand' | 'line' | 'zone' | 'highlight'
+  kind: 'run' | 'pass' | 'carry' | 'freehand' | 'line' | 'zone' | 'highlight' | 'distance'
   points: Point[]
   control?: Point
   colour: string
@@ -26,6 +26,8 @@ export type Scene = Layer & {
   name: string
   image?: Still
   showPlayerNames?: boolean
+  shapeTeams?: 'off' | 'home' | 'away' | 'both'
+  motionTargets?: Record<string, Point>
   pitchLayer?: Layer
   players: BoardPlayer[]
   ball: Ball | null
@@ -49,7 +51,7 @@ export const newId = () => globalThis.crypto.randomUUID?.()
 
 export function makeScene(name: string, match: Match | null = null): Scene {
   const scene: Scene = {
-    id: newId(), name, view: 'full', showAnnotations: true, marks: [], players: [],
+    id: newId(), name, view: 'full', showAnnotations: true, shapeTeams: 'off', motionTargets: {}, marks: [], players: [],
     ball: null, formations: {
       home: match?.home.formation ?? '4-3-3',
       away: match?.away.formation ?? '4-3-3',
@@ -127,7 +129,9 @@ export function syncPlayers(scene: Scene, match: Match | null, resetSide?: Side)
     const carrier = scene.players.find((player) => player.id === ball?.playerId)
     ball = { point: carrier ? { x: carrier.point.x + 23, y: carrier.point.y + 12 } : ball.point }
   }
-  return { ...scene, players, ball }
+  const ids = new Set(players.map(player => player.id))
+  const motionTargets = Object.fromEntries(Object.entries(scene.motionTargets ?? {}).filter(([id]) => ids.has(id)))
+  return { ...scene, players, ball, motionTargets }
 }
 
 export function updateMatch(board: Board, match: Match | null): Board {
@@ -146,7 +150,7 @@ export function updateMatch(board: Board, match: Match | null): Board {
       return syncPlayers({ ...scene, formations }, match)
     }
     return syncPlayers({
-      ...scene, minute: 0, addedTime: 0, substitutions: [], players: [], ball: null,
+      ...scene, minute: 0, addedTime: 0, substitutions: [], players: [], ball: null, motionTargets: {},
       formations: {
         home: match?.home.formation ?? '4-3-3',
         away: match?.away.formation ?? '4-3-3',
