@@ -1,0 +1,30 @@
+.board-editor {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  outline: none;
+}
+
+.board-editor--select [data-player],
+.board-editor--select [data-annotation],
+.board-editor--select [data-ball],
+.board-editor--ball [data-ball] { cursor: grab; }
+
+.board-editor--select:active [data-player],
+.board-editor--select:active [data-annotation],
+.board-editor--select:active [data-ball],
+.board-editor--ball:active [data-ball] { cursor: grabbing; }
+
+.board-editor--run,
+.board-editor--pass,
+.board-editor--carry,
+.board-editor--draw,
+.board-editor--shape,
+.board-editor--highlight,
+.board-editor--ball,
+.board-editor--select [data-handle] { cursor: crosshair; }
+
+.board-editor--erase [data-annotation] { cursor: cell; }
+
+.board-editor:focus-visible { outline: 2px solid var(--accent, #b7f568); outline-offset: 2px; }
