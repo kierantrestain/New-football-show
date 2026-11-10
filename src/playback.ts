@@ -27,9 +27,9 @@ function nearPlayer(players: BoardPlayer[], point: Point | undefined): BoardPlay
 }
 
 export function hasPlayableMovement(scene: Scene): boolean {
-  return !scene.image && scene.marks.some(mark =>
+  return !scene.image && (Object.keys(scene.motionTargets ?? {}).some(id => scene.players.some(player => player.id === id)) || scene.marks.some(mark =>
     (MOVING.has(mark.kind) && !!nearPlayer(scene.players, mark.points[0])) ||
-    (mark.kind === 'pass' && mark.points.length >= 2))
+    (mark.kind === 'pass' && mark.points.length >= 2)))
 }
 
 export function projectPlayback(scene: Scene, position: number): Scene {
@@ -50,6 +50,8 @@ export function projectPlayback(scene: Scene, position: number): Scene {
   }
 
   const players = scene.players.map(player => {
+    const target = scene.motionTargets?.[player.id]
+    if (target) return { ...player, point: between(player.point, target, t) }
     const run = motion.get(player.id)
     return run ? { ...player, point: pathPoint(player.point, run, t) } : player
   })
