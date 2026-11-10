@@ -111,7 +111,7 @@ export function createFixtureAdapter({ fetcher = globalThis.fetch, now = Date.no
     const token = provider === 'football-data.org' ? env.FOOTBALL_DATA_API_TOKEN?.trim() : undefined
     const configured = provider === 'fpl' || (provider === 'football-data.org' && token)
     if (env.MATCH_DATA_USE_AUTHORISED !== 'true' || !configured) {
-      return { status: 503, body: { message: 'No authorised Premier League feed is configured. Enter a fixture or import match data.' } }
+      return { status: 503, body: { code: 'NO_PROVIDER', message: 'No authorised Premier League feed is configured. Enter a fixture or import match data.' } }
     }
     if (!active || active.provider !== provider || active.token !== token) active = { provider, token }
     const entry = active

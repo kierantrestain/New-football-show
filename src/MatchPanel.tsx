@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { ArrowLeft, ArrowRight, ArrowRightLeft, CalendarDays, ChevronDown, ExternalLink, FileUp, Search, Users } from 'lucide-react'
 import { Modal } from './Modal'
+import { loadOpenFootball, londonInput, londonKickoff, OpenFootballFeedError } from './openFootball'
+import type { OpenFootballCatalog } from './openFootball'
 import {
   FORMATIONS, TEAM_COLOURS, activeLineup, fixtureMatch, mergeMatchEvents, minuteLabel, minuteOrder, parseMatch,
 } from './match'
@@ -17,15 +19,27 @@ const verificationLabel = (status: Verification) => status === 'verified' ? 'Sou
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'The match could not be saved.'
 
 type SelectorProps = { match: Match | null; onChange: (match: Match) => void }
-type TimedFixtureCatalog = FixtureCatalog & { checkedAt: string; latestUpdatedAt?: string | null; freshnessSec: number }
+type DatedFixture = FixtureCatalog['fixtures'][number] & { date?: string }
+type TimedFixtureCatalog = Omit<FixtureCatalog, 'fixtures'> & {
+  fixtures: DatedFixture[]
+  checkedAt: string
+  latestUpdatedAt?: string | null
+  freshnessSec: number
+  coverage?: OpenFootballCatalog['coverage']
+}
 type FixtureFeed = { state: 'loading' } | { state: 'error'; message: string } |
   { state: 'ready'; catalog: TimedFixtureCatalog; expiresAt: number }
 
 const fixtureCategories = [
   { status: 'scheduled', label: 'Upcoming fixtures' },
   { status: 'finished', label: 'Completed results' },
-  { status: 'live', label: 'In progress' },
+  { status: 'live', label: 'Live' },
 ] as const
+const dateOnly = new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeZone: 'UTC' })
+const formatFixtureDate = (fixture: DatedFixture) => fixture.kickoff || !fixture.date
+  ? dateLabel(fixture.kickoff)
+  : `${dateOnly.format(new Date(fixture.date))} · Kick-off TBC`
+const PAGE_SIZE = 20
 const connectionError = 'Could not connect to the fixture feed. Retry, enter a match or import JSON.'
 const validTimestamp = (value?: string | null): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value))
 
@@ -50,6 +64,7 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
   const [requestVersion, setRequestVersion] = useState(0)
   const [selectedCategory, setCategory] = useState<Match['status']>()
   const [query, setQuery] = useState('')
+  const [shown, setShown] = useState(PAGE_SIZE)
   const [json, setJson] = useState('')
   const [error, setError] = useState('')
   const refresh = useCallback(() => {
@@ -65,33 +80,46 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
       request.abort()
     }, 12_000)
 
+    function showCatalogue(catalog: TimedFixtureCatalog, serverDate: string | null) {
+      const { freshnessSec, checkedAt } = catalog
+      if (!validTimestamp(checkedAt) || typeof freshnessSec !== 'number' || !Number.isFinite(freshnessSec) || freshnessSec <= 0) {
+        setFeed({ state: 'error', message: 'Fixture data freshness could not be verified. Retry, enter a match or import JSON.' })
+        return
+      }
+      const now = Date.now()
+      const feedNow = validTimestamp(serverDate) ? Date.parse(serverDate) : now
+      const age = Math.max(0, feedNow - Date.parse(checkedAt))
+      const expiresAt = now + freshnessSec * 1000 - age
+      if (expiresAt <= now) {
+        setFeed({ state: 'error', message: 'Fixture data has expired. Retry, enter a match or import JSON.' })
+        return
+      }
+      setFeed({ state: 'ready', catalog, expiresAt })
+      expiryTimer = window.setTimeout(refresh, expiresAt - now)
+    }
+
     fetch('/api/fixtures', { signal: request.signal, cache: 'no-store' })
       .then(async (response) => {
         const data = await response.json().catch(() => null)
         if (request.signal.aborted) return
+        if (response.status === 503 && data?.code === 'NO_PROVIDER') {
+          const catalog = await loadOpenFootball(request.signal)
+          if (!request.signal.aborted) showCatalogue(catalog, null)
+          return
+        }
         if (!response.ok || !data || typeof data.source !== 'string' || !Array.isArray(data.fixtures) || !Array.isArray(data.clubs)) {
           setFeed({ state: 'error', message: typeof data?.message === 'string' ? data.message : connectionError })
           return
         }
-        const catalog: TimedFixtureCatalog = data
-        const { freshnessSec, checkedAt } = catalog
-        if (!validTimestamp(checkedAt) || typeof freshnessSec !== 'number' || !Number.isFinite(freshnessSec) || freshnessSec <= 0) {
-          setFeed({ state: 'error', message: 'Fixture data freshness could not be verified. Retry, enter a match or import JSON.' })
-          return
-        }
-        const now = Date.now()
-        const serverDate = response.headers.get('Date')
-        const feedNow = validTimestamp(serverDate) ? Date.parse(serverDate) : now
-        const age = Math.max(0, feedNow - Date.parse(checkedAt))
-        const expiresAt = now + freshnessSec * 1000 - age
-        if (expiresAt <= now) {
-          setFeed({ state: 'error', message: 'Fixture data has expired. Retry, enter a match or import JSON.' })
-          return
-        }
-        setFeed({ state: 'ready', catalog, expiresAt })
-        expiryTimer = window.setTimeout(refresh, expiresAt - now)
+        showCatalogue(data, response.headers.get('Date'))
       })
-      .catch(() => { if (!request.signal.aborted) setFeed({ state: 'error', message: connectionError }) })
+      .catch((error: unknown) => {
+        if (!request.signal.aborted) setFeed({
+          state: 'error',
+          message: error instanceof OpenFootballFeedError
+            ? `${error.message} Retry, enter a match or import JSON.` : connectionError,
+        })
+      })
       .finally(() => window.clearTimeout(timeout))
     return () => {
       request.abort()
@@ -101,18 +129,22 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
   }, [mode, refresh, requestVersion])
 
   const catalog = feed.state === 'ready' ? feed.catalog : null
-  const category = selectedCategory ?? catalog?.fixtures.find((fixture) => fixture.id === match?.id)?.status ??
+  const hasLive = catalog?.fixtures.some((fixture) => fixture.status === 'live') ?? false
+  const preferredCategory = selectedCategory ?? catalog?.fixtures.find((fixture) => fixture.id === match?.id)?.status ??
     match?.status ?? (match?.score ? 'finished' : 'scheduled')
+  const category = preferredCategory === 'live' && !hasLive ? 'scheduled' : preferredCategory
   const clubs = new Map(catalog?.clubs.map((club) => [club.id, club.name]))
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
   const filtered = catalog?.fixtures.filter((fixture) => {
     if (fixture.status !== category) return false
-    const text = [clubs.get(fixture.homeId), clubs.get(fixture.awayId), dateLabel(fixture.kickoff), 'MW ' + fixture.week].join(' ').toLowerCase()
+    const text = [clubs.get(fixture.homeId), clubs.get(fixture.awayId), formatFixtureDate(fixture), 'MW ' + fixture.week].join(' ').toLowerCase()
     return words.every((word) => text.includes(word))
   }).sort((a, b) => {
     const current = Number(b.id === match?.id) - Number(a.id === match?.id)
-    const undated = Number(!a.kickoff) - Number(!b.kickoff)
-    const byDate = (a.kickoff ?? '').localeCompare(b.kickoff ?? '')
+    const dateA = a.kickoff ?? a.date ?? ''
+    const dateB = b.kickoff ?? b.date ?? ''
+    const undated = Number(!dateA) - Number(!dateB)
+    const byDate = dateA.localeCompare(dateB)
     return current || undated || (category === 'scheduled' ? byDate : -byDate)
   }) ?? []
   const switchMode = (next: typeof mode) => {
@@ -156,28 +188,42 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
           </p>
           <button className="button subtle compact" type="button" onClick={refresh}>Refresh feed</button>
         </div>
+        {feed.catalog.coverage && <p className="match-note">
+          {feed.catalog.coverage.completedThrough
+            ? `Latest final score is dated ${dateOnly.format(new Date(feed.catalog.coverage.completedThrough))}.`
+            : 'The source has no final scores yet.'}
+          {feed.catalog.coverage.missingPast > 0 && ` Partial results coverage. ${feed.catalog.coverage.missingPast} past fixtures have no final score in this feed.`}
+        </p>}
         <div className="match-tabs" role="group" aria-label="Fixture status">
-          {fixtureCategories.filter(({ status }) => status !== 'live' || category === 'live' ||
-            feed.catalog.fixtures.some((fixture) => fixture.status === 'live')).map(({ status, label }) =>
-            <button type="button" key={status} aria-pressed={category === status} onClick={() => setCategory(status)}>{label}</button>
+          {fixtureCategories.filter(({ status }) => status !== 'live' || hasLive).map(({ status, label }) =>
+            <button type="button" key={status} aria-pressed={category === status} onClick={() => {
+              setCategory(status)
+              setShown(PAGE_SIZE)
+            }}>{label}</button>
           )}
         </div>
-        <label className="match-search"><Search size={16} /><input aria-label="Search fixtures" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
+        <label className="match-search"><Search size={16} /><input aria-label="Search fixtures" value={query} onChange={(event) => {
+          setQuery(event.target.value)
+          setShown(PAGE_SIZE)
+        }} /></label>
         <div className="fixture-list" aria-label={fixtureCategories.find(({ status }) => status === category)?.label}>
-          {filtered.map((fixture) => <button type="button" className="fixture-row" key={fixture.id} aria-current={match?.id === fixture.id || undefined}
+          {filtered.slice(0, shown).map((fixture) => <button type="button" className="fixture-row" key={fixture.id} aria-current={match?.id === fixture.id || undefined}
             onClick={() => {
               if (Date.now() >= feed.expiresAt) { refresh(); return }
               onChange(fixtureMatch(fixture, feed.catalog, match))
             }}>
             <span>{clubs.get(fixture.homeId)} <strong>{fixture.score?.join('–') ?? 'v'}</strong> {clubs.get(fixture.awayId)}</span>
             <span>
-              {fixture.week ? `MW ${fixture.week} · ` : ''}{dateLabel(fixture.kickoff)}
+              {fixture.week ? `MW ${fixture.week} · ` : ''}{formatFixtureDate(fixture)}
               {fixture.status === 'finished' ? (fixture.score ? ' · Full-time' : ' · Score unavailable') : fixture.status === 'live' ? ' · In progress' : ''}
               {match?.id === fixture.id ? ' · Refresh fixture' : ''}
             </span>
           </button>)}
-          {!filtered.length && <p className="match-note">No matching fixtures.</p>}
+          {!filtered.length && <p className="match-note">{query.trim() ? 'No fixtures match your search.' : `No ${category === 'finished' ? 'completed results' : 'upcoming fixtures'} are available from this source.`}</p>}
         </div>
+        {filtered.length > shown && <button className="button subtle compact" type="button" onClick={() => setShown((count) => count + PAGE_SIZE)}>
+          Show more {category === 'finished' ? 'results' : 'fixtures'}
+        </button>}
         <p className="match-note">Matchday lineups must be supplied separately.</p>
       </>}
     </>}
@@ -202,25 +248,6 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
       <button className="button primary match-submit" type="submit">Import match</button>
     </form>}
   </Modal>
-}
-
-const londonParts = new Intl.DateTimeFormat('en-GB', {
-  year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-  hourCycle: 'h23', timeZone: 'Europe/London',
-})
-
-function londonInput(time: number): string {
-  const parts = Object.fromEntries(londonParts.formatToParts(time).map(({ type, value }) => [type, value]))
-  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`
-}
-
-function londonKickoff(value: string): string | null {
-  if (!value) return null
-  const target = Date.parse(value + 'Z')
-  if (!Number.isFinite(target)) throw new Error('Enter a valid London kick-off time.')
-  const utc = [target, target - 3600000].find((time) => londonInput(time) === value)
-  if (utc === undefined) throw new Error('Enter a valid London kick-off time.')
-  return new Date(utc).toISOString()
 }
 
 function ManualFixture({ match, onChange }: SelectorProps) {
