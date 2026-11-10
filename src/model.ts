@@ -129,9 +129,12 @@ export function syncPlayers(scene: Scene, match: Match | null, resetSide?: Side)
     const carrier = scene.players.find((player) => player.id === ball?.playerId)
     ball = { point: carrier ? { x: carrier.point.x + 23, y: carrier.point.y + 12 } : ball.point }
   }
+  // Legacy scenes have no motionTargets property. Keep that exact shape for
+  // round-trip compatibility instead of silently introducing an empty field.
   const ids = new Set(players.map(player => player.id))
-  const motionTargets = Object.fromEntries(Object.entries(scene.motionTargets ?? {}).filter(([id]) => ids.has(id)))
-  return { ...scene, players, ball, motionTargets }
+  const motionTargets = scene.motionTargets === undefined ? undefined
+    : Object.fromEntries(Object.entries(scene.motionTargets).filter(([id]) => ids.has(id)))
+  return { ...scene, players, ball, ...(motionTargets === undefined ? {} : { motionTargets }) }
 }
 
 export function updateMatch(board: Board, match: Match | null): Board {
