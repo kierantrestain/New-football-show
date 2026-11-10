@@ -1,5 +1,6 @@
 import { memo, useId, type ComponentPropsWithRef } from 'react';
 import type { Ball, BoardPlayer, Mark, Point, Scene } from './model';
+import { pitchMetres, teamShapes } from './tactics';
 
 type Bounds = Point & { width: number; height: number };
 type Label = Bounds & { compress: boolean };
@@ -235,7 +236,7 @@ function Handle({ point, name }: { point: Point; name: string }) {
   );
 }
 
-const Annotation = memo(function Annotation({ mark, clean, uid, unit }: { mark: Mark; clean: boolean; uid: string; unit: number }) {
+const Annotation = memo(function Annotation({ mark, clean, uid, unit, imageScale }: { mark: Mark; clean: boolean; uid: string; unit: number; imageScale?: number }) {
   const suffix = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const id = `${uid}-${suffix}`;
   const start = mark.points[0];
@@ -298,6 +299,16 @@ const Annotation = memo(function Annotation({ mark, clean, uid, unit }: { mark: 
           <path d={path} fill="none" stroke="#101b15" strokeOpacity=".48" strokeWidth={6.2 * unit} strokeDasharray={dash} strokeLinecap={lineCap} strokeLinejoin="round" />
           <path d={path} fill="none" stroke={colour} strokeWidth={(kind === 'freehand' ? 3.2 : 3.8) * unit} strokeDasharray={dash} strokeLinecap={lineCap} strokeLinejoin="round"
             markerEnd={arrow ? `url(#${id}-arrow)` : undefined} />
+          {kind === 'distance' && <>
+            <circle cx={start.x} cy={start.y} r={4 * unit} fill={colour} />
+            <circle cx={end.x} cy={end.y} r={4 * unit} fill={colour} />
+            <g transform={`translate(${(start.x + end.x) / 2} ${(start.y + end.y) / 2 - 13 * unit})`} pointerEvents="none">
+              <rect x={-39 * unit} y={-14 * unit} width={78 * unit} height={25 * unit} rx={5 * unit} fill="#0c1918" stroke={colour} strokeOpacity=".85" strokeWidth={1.2 * unit} />
+              <text y={4 * unit} textAnchor="middle" fontFamily={FONT} fontWeight="800" fontSize={13.5 * unit} fill="#f7fdf4">
+                {imageScale ? `${Math.round(pitchMetres(start, end) * 10 * imageScale)} px` : `${pitchMetres(start, end).toFixed(1)} m`}
+              </text>
+            </g>
+          </>}
         </>
       )}
     </g>
@@ -324,9 +335,10 @@ type BoardVisualProps = ComponentPropsWithRef<'svg'> & {
   selection?: BoardSelection;
   marquee?: Bounds;
   clean?: boolean;
+  showMotionTargets?: boolean;
 };
 
-export function BoardVisual({ scene, selection, marquee, clean = false, style, ...svgProps }: BoardVisualProps) {
+export function BoardVisual({ scene, selection, marquee, clean = false, showMotionTargets = false, style, ...svgProps }: BoardVisualProps) {
   const uid = `board-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const view = getViewBox(scene);
   const bounds = getBoardBounds(scene);
@@ -339,6 +351,9 @@ export function BoardVisual({ scene, selection, marquee, clean = false, style, .
   const marks = scene.showAnnotations ? scene.marks : [];
   const activeMark = clean ? undefined : marks.find(mark => mark.id === selection?.annotation);
   const unit = Math.max(1, view.width / FULL.width);
+  const shapes = teamShapes(scene);
+  const targets = !clean && showMotionTargets && !scene.image ? scene.motionTargets ?? {} : {};
+  const imageScale = scene.image ? scene.image.width / 1050 : undefined;
 
   return (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`} width="1920" height="1080" role="img"
@@ -356,12 +371,27 @@ export function BoardVisual({ scene, selection, marquee, clean = false, style, .
         {scene.image
           ? <image href={scene.image.src} {...bounds} preserveAspectRatio="none" />
           : <Pitch uid={uid} />}
-        {marks.map(mark => <Annotation key={mark.id} mark={mark} clean={clean} uid={uid} unit={unit} />)}
+        {shapes.map(shape => <g key={shape.id} pointerEvents="none">
+          {shape.hull.length >= 3 && <polygon points={shape.hull.map(point => `${point.x},${point.y}`).join(' ')}
+            fill={shape.colour} fillOpacity=".11" stroke={shape.colour} strokeOpacity=".9" strokeWidth={2.5 * unit}
+            strokeDasharray={`${10 * unit} ${6 * unit}`} strokeLinejoin="round" />}
+        </g>)}
+        {marks.map(mark => <Annotation key={mark.id} mark={mark} clean={clean} uid={uid} unit={unit} imageScale={imageScale} />)}
+        {Object.entries(targets).map(([id, point]) => <g key={id} transform={`translate(${point.x} ${point.y})`} pointerEvents="none">
+          <circle r={20} fill="#d9fa87" fillOpacity=".12" stroke="#d9fa87" strokeWidth="1.9" strokeDasharray="4 5" />
+          <circle r={5} fill="#d9fa87" fillOpacity=".65" />
+        </g>)}
         {players.map((player, index) => <Player key={player.id} player={player} selected={selection?.players.includes(player.id) ?? false} clean={clean} uid={uid} label={labels[index]} />)}
         {ball && !scene.image && <Football point={ball} selected={selection?.ball ?? false} clean={clean} />}
         {activeMark && <AnnotationHandles mark={activeMark} />}
         {!clean && marquee && <rect {...marquee} fill="#d6fc86" fillOpacity=".12" stroke="#d6fc86" strokeWidth="1.2" strokeDasharray="4 4" pointerEvents="none" />}
       </g>
+      {shapes.map((shape, index) => <g key={shape.id} transform={`translate(${view.x + 16 * unit} ${view.y + (18 + index * 47) * unit})`} pointerEvents="none">
+        <rect width={210 * unit} height={40 * unit} rx={7 * unit} fill="#0c1a1c" fillOpacity=".91" stroke={shape.colour} strokeOpacity=".5" />
+        <rect x={9 * unit} y={9 * unit} width={3.5 * unit} height={22 * unit} rx={1.75 * unit} fill={shape.colour} />
+        <text x={21 * unit} y={17 * unit} fontFamily={FONT} fontWeight="800" fontSize={10.5 * unit} fill="#eef5ed">{shape.side === 'home' ? 'HOME' : 'AWAY'} SHAPE · OUTFIELD</text>
+        <text x={21 * unit} y={31 * unit} fontFamily={FONT} fontWeight="700" fontSize={11.5 * unit} fill="#d6e9da">Width {shape.widthMetres.toFixed(1)}m · Depth {shape.depthMetres.toFixed(1)}m</text>
+      </g>)}
     </svg>
   );
 }
