@@ -112,6 +112,17 @@ export function syncPlayers(scene: Scene, match: Match | null, resetSide?: Side)
     }
   }
   let ball = scene.ball
+  // A newly populated pitch starts with possession attached to a real player.
+  // Existing scenes and intentionally removed balls are left untouched.
+  if (!ball && !scene.players.length && players.length) {
+    const home = players.filter(player => player.teamId === match?.home.id)
+    const starter = home.find(player => player.role === 'FWD')
+      ?? home.find(player => player.role === 'MID')
+      ?? home.find(player => player.role !== 'GK')
+      ?? home[0]
+      ?? players[0]
+    ball = { point: starter.point, playerId: starter.id }
+  }
   if (ball?.playerId && !players.some((player) => player.id === ball?.playerId)) {
     const carrier = scene.players.find((player) => player.id === ball?.playerId)
     ball = { point: carrier ? { x: carrier.point.x + 23, y: carrier.point.y + 12 } : ball.point }
