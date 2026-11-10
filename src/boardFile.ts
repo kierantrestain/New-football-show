@@ -144,6 +144,7 @@ export function parseBoardFile(input: unknown, id: string, updatedAt: number): B
         return [id, destination]
       }))
     }
+    if (raw.ball === null) placed.ball = null
     if (raw.ball !== null) {
       const ball = record(raw.ball, 'ball')
       const holder = placed.players.find((player) => player.id === ball.playerId)
