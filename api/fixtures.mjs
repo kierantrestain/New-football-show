@@ -5,7 +5,7 @@ export default {
     if (request.method !== 'GET') {
       return Response.json({ message: 'Use GET to read fixtures.' }, { status: 405, headers: { Allow: 'GET' } })
     }
-    const { status, body } = await getFixtures(process.env.ENABLE_FPL === 'true')
+    const { status, body } = await getFixtures(process.env)
     return Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } })
   },
 }

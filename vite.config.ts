@@ -15,7 +15,7 @@ export default defineConfig(({ mode }) => {
       return
     }
     try {
-      const { status, body } = await getFixtures(env.ENABLE_FPL === 'true')
+      const { status, body } = await getFixtures(env)
       res.statusCode = status
       res.end(JSON.stringify(body))
     } catch {

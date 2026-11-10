@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { ArrowLeft, ArrowRight, ArrowRightLeft, CalendarDays, ChevronDown, ExternalLink, FileUp, Search, Users } from 'lucide-react'
 import { Modal } from './Modal'
@@ -17,6 +17,17 @@ const verificationLabel = (status: Verification) => status === 'verified' ? 'Sou
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'The match could not be saved.'
 
 type SelectorProps = { match: Match | null; onChange: (match: Match) => void }
+type TimedFixtureCatalog = FixtureCatalog & { checkedAt: string; latestUpdatedAt?: string | null; freshnessSec: number }
+type FixtureFeed = { state: 'loading' } | { state: 'error'; message: string } |
+  { state: 'ready'; catalog: TimedFixtureCatalog; expiresAt: number }
+
+const fixtureCategories = [
+  { status: 'scheduled', label: 'Upcoming fixtures' },
+  { status: 'finished', label: 'Completed results' },
+  { status: 'live', label: 'In progress' },
+] as const
+const connectionError = 'Could not connect to the fixture feed. Retry, enter a match or import JSON.'
+const validTimestamp = (value?: string | null): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value))
 
 export function MatchSelector({ match, onChange }: SelectorProps) {
   const [open, setOpen] = useState(false)
@@ -35,42 +46,80 @@ export function MatchSelector({ match, onChange }: SelectorProps) {
 function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: () => void }) {
   const [mode, setMode] = useState<'fixtures' | 'manual' | 'json'>('fixtures')
   const [newFixture, setNewFixture] = useState(false)
-  const [catalog, setCatalog] = useState<FixtureCatalog>()
-  const [feed, setFeed] = useState('Loading Premier League fixtures…')
+  const [feed, setFeed] = useState<FixtureFeed>({ state: 'loading' })
+  const [requestVersion, setRequestVersion] = useState(0)
+  const [selectedCategory, setCategory] = useState<Match['status']>()
   const [query, setQuery] = useState('')
   const [json, setJson] = useState('')
   const [error, setError] = useState('')
-  useEffect(() => {
-    const request = new AbortController()
-    fetch('/api/fixtures', { signal: request.signal })
-      .then(async (response) => {
-        const data = await response.json()
-        if (response.ok && Array.isArray(data.fixtures) && Array.isArray(data.clubs)) {
-          setCatalog(data)
-          setFeed('')
-        } else setFeed(data.message || 'Fixture feed unavailable. Enter or import match data.')
-      })
-      .catch(() => { if (!request.signal.aborted) setFeed('Fixture feed unavailable. Enter or import match data.') })
-    return () => request.abort()
+  const refresh = useCallback(() => {
+    setFeed({ state: 'loading' })
+    setRequestVersion((version) => version + 1)
   }, [])
+  useEffect(() => {
+    if (mode !== 'fixtures') return
+    const request = new AbortController()
+    let expiryTimer: number | undefined
+    const timeout = window.setTimeout(() => {
+      setFeed({ state: 'error', message: connectionError })
+      request.abort()
+    }, 12_000)
 
+    fetch('/api/fixtures', { signal: request.signal, cache: 'no-store' })
+      .then(async (response) => {
+        const data = await response.json().catch(() => null)
+        if (request.signal.aborted) return
+        if (!response.ok || !data || typeof data.source !== 'string' || !Array.isArray(data.fixtures) || !Array.isArray(data.clubs)) {
+          setFeed({ state: 'error', message: typeof data?.message === 'string' ? data.message : connectionError })
+          return
+        }
+        const catalog: TimedFixtureCatalog = data
+        const { freshnessSec, checkedAt } = catalog
+        if (!validTimestamp(checkedAt) || typeof freshnessSec !== 'number' || !Number.isFinite(freshnessSec) || freshnessSec <= 0) {
+          setFeed({ state: 'error', message: 'Fixture data freshness could not be verified. Retry, enter a match or import JSON.' })
+          return
+        }
+        const now = Date.now()
+        const serverDate = response.headers.get('Date')
+        const feedNow = validTimestamp(serverDate) ? Date.parse(serverDate) : now
+        const age = Math.max(0, feedNow - Date.parse(checkedAt))
+        const expiresAt = now + freshnessSec * 1000 - age
+        if (expiresAt <= now) {
+          setFeed({ state: 'error', message: 'Fixture data has expired. Retry, enter a match or import JSON.' })
+          return
+        }
+        setFeed({ state: 'ready', catalog, expiresAt })
+        expiryTimer = window.setTimeout(refresh, expiresAt - now)
+      })
+      .catch(() => { if (!request.signal.aborted) setFeed({ state: 'error', message: connectionError }) })
+      .finally(() => window.clearTimeout(timeout))
+    return () => {
+      request.abort()
+      window.clearTimeout(timeout)
+      window.clearTimeout(expiryTimer)
+    }
+  }, [mode, refresh, requestVersion])
+
+  const catalog = feed.state === 'ready' ? feed.catalog : null
+  const category = selectedCategory ?? catalog?.fixtures.find((fixture) => fixture.id === match?.id)?.status ??
+    match?.status ?? (match?.score ? 'finished' : 'scheduled')
   const clubs = new Map(catalog?.clubs.map((club) => [club.id, club.name]))
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
-  const rank = (fixture: FixtureCatalog['fixtures'][number]) => {
-    if (fixture.id === match?.id) return 0
-    if (fixture.status === 'live') return 1
-    if (!fixture.kickoff) return 4
-    return fixture.status === 'scheduled' ? 2 : 3
-  }
   const filtered = catalog?.fixtures.filter((fixture) => {
+    if (fixture.status !== category) return false
     const text = [clubs.get(fixture.homeId), clubs.get(fixture.awayId), dateLabel(fixture.kickoff), 'MW ' + fixture.week].join(' ').toLowerCase()
     return words.every((word) => text.includes(word))
   }).sort((a, b) => {
-    const byDate = (a.kickoff ?? 'z').localeCompare(b.kickoff ?? 'z')
-    if (words.length) return byDate
-    return rank(a) - rank(b) || (rank(a) === 3 ? -byDate : byDate)
+    const current = Number(b.id === match?.id) - Number(a.id === match?.id)
+    const undated = Number(!a.kickoff) - Number(!b.kickoff)
+    const byDate = (a.kickoff ?? '').localeCompare(b.kickoff ?? '')
+    return current || undated || (category === 'scheduled' ? byDate : -byDate)
   }) ?? []
-  const switchMode = (next: typeof mode) => { setError(''); setMode(next) }
+  const switchMode = (next: typeof mode) => {
+    setError('')
+    if (next === 'fixtures' && mode !== 'fixtures') setFeed({ state: 'loading' })
+    setMode(next)
+  }
 
   const loadJson = async (file: File | undefined) => {
     if (!file) return
@@ -93,18 +142,43 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
       <button type="button" aria-pressed={mode === 'json'} onClick={() => switchMode('json')}>Import JSON</button>
     </div>
     {mode === 'fixtures' && <>
-      {feed && <p className="match-note" role="status">{feed}</p>}
-      {catalog && <>
+      {feed.state === 'loading' && <p className="match-note" role="status">Checking fixture feed…</p>}
+      {feed.state === 'error' && <div className="match-actions">
+        <p className="match-error" role="alert">{feed.message}</p>
+        <button className="button subtle compact" type="button" onClick={refresh}>Retry</button>
+      </div>}
+      {feed.state === 'ready' && <>
+        <div className="match-actions">
+          <p className="match-note" role="status">
+            <strong>Connected</strong> · {feed.catalog.source}<br />
+            Fetched {dateLabel(feed.catalog.checkedAt)} UK
+            {validTimestamp(feed.catalog.latestUpdatedAt) && <> · Latest fixture update {dateLabel(feed.catalog.latestUpdatedAt)} UK</>}
+          </p>
+          <button className="button subtle compact" type="button" onClick={refresh}>Refresh feed</button>
+        </div>
+        <div className="match-tabs" role="group" aria-label="Fixture status">
+          {fixtureCategories.filter(({ status }) => status !== 'live' || category === 'live' ||
+            feed.catalog.fixtures.some((fixture) => fixture.status === 'live')).map(({ status, label }) =>
+            <button type="button" key={status} aria-pressed={category === status} onClick={() => setCategory(status)}>{label}</button>
+          )}
+        </div>
         <label className="match-search"><Search size={16} /><input aria-label="Search fixtures" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
-        <div className="fixture-list" aria-label="Premier League fixtures">
+        <div className="fixture-list" aria-label={fixtureCategories.find(({ status }) => status === category)?.label}>
           {filtered.map((fixture) => <button type="button" className="fixture-row" key={fixture.id} aria-current={match?.id === fixture.id || undefined}
-            onClick={() => onChange(fixtureMatch(fixture, catalog, match))}>
+            onClick={() => {
+              if (Date.now() >= feed.expiresAt) { refresh(); return }
+              onChange(fixtureMatch(fixture, feed.catalog, match))
+            }}>
             <span>{clubs.get(fixture.homeId)} <strong>{fixture.score?.join('–') ?? 'v'}</strong> {clubs.get(fixture.awayId)}</span>
-            <span>{fixture.week ? `MW ${fixture.week} · ` : ''}{dateLabel(fixture.kickoff)}{fixture.status === 'live' ? ' · In progress' : ''}{match?.id === fixture.id ? ' · Refresh fixture' : ''}</span>
+            <span>
+              {fixture.week ? `MW ${fixture.week} · ` : ''}{dateLabel(fixture.kickoff)}
+              {fixture.status === 'finished' ? (fixture.score ? ' · Full-time' : ' · Score unavailable') : fixture.status === 'live' ? ' · In progress' : ''}
+              {match?.id === fixture.id ? ' · Refresh fixture' : ''}
+            </span>
           </button>)}
           {!filtered.length && <p className="match-note">No matching fixtures.</p>}
         </div>
-        <p className="match-note">{catalog.source}. Matchday lineups must be supplied separately.</p>
+        <p className="match-note">Matchday lineups must be supplied separately.</p>
       </>}
     </>}
     {mode === 'manual' && <>
