@@ -3,7 +3,7 @@ import type { FormEvent, ReactNode } from 'react'
 import {
   ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, ChevronDown, CircleDot, Copy,
   Eraser, Eye, EyeOff, FileUp, FolderOpen, ImagePlus, Layers2, Maximize, MousePointer2, PanelRight,
-  Pencil, Plus, Radio, Redo2, Route, Save, Scan, Send, Square, Tags, Trash2, Undo2, UsersRound, X,
+  Pause, Pencil, Play, Plus, Radio, Redo2, RotateCcw, Route, Save, Scan, Send, Square, Tags, Trash2, Undo2, UsersRound, X,
 } from 'lucide-react'
 import { BoardEditor, restyleMark } from './BoardEditor'
 import type { BoardOptions, BoardSelection, BoardTool } from './BoardEditor'
@@ -14,6 +14,7 @@ import { Modal } from './Modal'
 import { mergeMatchEvents } from './match'
 import type { Substitution } from './match'
 import { exportBoard } from './export'
+import { hasPlayableMovement, projectPlayback } from './playback'
 import { importStill, makeBoard, makeScene, newId, removeStill, syncPlayers, updateMatch } from './model'
 import type { Board, Scene, View } from './model'
 import { deleteBoard, lastBoardId, listBoards, openBoard, readStill, rememberBoard, saveBoard } from './storage'
@@ -125,6 +126,7 @@ export function App() {
     colour: inks[0].colour, style: 'solid', curved: false, drawMode: 'freehand', shapeMode: 'zone', group: false,
   })
   const [onAir, setOnAir] = useState(false)
+  const [playback, setPlayback] = useState<{ mode: 'stopped' | 'playing' | 'paused'; progress: number }>({ mode: 'stopped', progress: 0 })
   const [exporting, setExporting] = useState(false)
   const [saving, setSaving] = useState(false)
   const frame = useRef<HTMLDivElement>(null)
@@ -139,6 +141,48 @@ export function App() {
   const optionsVisible = !['ball', 'erase'].includes(tool)
   const arrowTool = tool === 'run' || tool === 'pass' || tool === 'carry'
   const arrowSelected = tool === 'select' && (selectedMark?.kind === 'run' || selectedMark?.kind === 'pass' || selectedMark?.kind === 'carry')
+  const canPlay = scene.players.length > 0 && hasPlayableMovement(scene)
+  const playbackScene = playback.mode === 'stopped' ? scene : projectPlayback(scene, playback.progress)
+  const selectedPlayer = selection.players.length === 1 ? scene.players.find(player => player.id === selection.players[0]) : undefined
+  const carrier = scene.players.find(player => player.id === scene.ball?.playerId)
+
+  // Live motion is a non-destructive preview: no change to board history or saved positions.
+  useEffect(() => {
+    setPlayback({ mode: 'stopped', progress: 0 })
+  }, [scene, board.id])
+
+  useEffect(() => {
+    if (playback.mode !== 'playing') return
+    let frameId = 0
+    const duration = 4200
+    const started = performance.now() - playback.progress * duration
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - started) / duration)
+      setPlayback({ mode: progress >= 1 ? 'paused' : 'playing', progress })
+      if (progress < 1) frameId = requestAnimationFrame(tick)
+    }
+    frameId = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(frameId)
+  }, [playback.mode])
+
+  function togglePlayback() {
+    if (!canPlay) return
+    setPlayback(current => current.mode === 'playing'
+      ? { ...current, mode: 'paused' }
+      : { mode: 'playing', progress: current.progress >= 1 ? 0 : current.progress })
+  }
+
+  function resetPlayback() {
+    setPlayback({ mode: 'stopped', progress: 0 })
+  }
+
+  function giveBall() {
+    if (!selectedPlayer) return
+    const attached = scene.ball?.playerId === selectedPlayer.id
+    editScene(item => ({ ...item, ball: attached
+      ? { point: { x: selectedPlayer.point.x + 23, y: selectedPlayer.point.y + 12 } }
+      : { point: selectedPlayer.point, playerId: selectedPlayer.id } }))
+  }
 
   useEffect(() => {
     let live = true
@@ -374,6 +418,8 @@ export function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
       if (onAir) {
+        if (event.key.toLowerCase() === 'p' && !event.repeat) { event.preventDefault(); togglePlayback(); return }
+        if (event.key.toLowerCase() === 'r' && !event.repeat) { event.preventDefault(); resetPlayback(); return }
         if (event.key === 'Escape') stopAir()
         if (event.key === 'ArrowLeft') navigate(sceneIndex - 1)
         if (event.key === 'ArrowRight') navigate(sceneIndex + 1)
@@ -428,7 +474,7 @@ export function App() {
             if (now - lastTap.current < 400) stopAir()
             lastTap.current = now
           }}>
-          <BoardVisual scene={scene} clean />
+          <BoardVisual scene={playbackScene} clean />
         </div>
       ) : (
         <>
@@ -485,6 +531,19 @@ export function App() {
                   <span className="board-status">{dirty ? 'Unsaved changes' : saved ? 'Saved locally' : 'Local board'}{!scene.image && scene.players.length > 0 && ' · Editorial positions'}</span>
                 </div>
                 <div className="stage-actions">
+                  {!scene.image && <>
+                    <button type="button" className="button primary compact playback-button"
+                      onClick={togglePlayback} disabled={!canPlay}
+                      title={canPlay ? 'Preview the drawn player runs and passes' : 'Draw a Run, Carry or Pass arrow to play movement'}
+                      aria-label={playback.mode === 'playing' ? 'Pause movement' : playback.progress >= 1 ? 'Replay movement' : 'Play movement'}>
+                      {playback.mode === 'playing' ? <Pause size={16} /> : <Play size={16} />}
+                      <span>{playback.mode === 'playing' ? 'Pause' : playback.progress >= 1 ? 'Replay' : 'Play'}</span>
+                    </button>
+                    {playback.mode !== 'stopped' && <IconButton label="Reset movement" onClick={resetPlayback}><RotateCcw size={17} /></IconButton>}
+                    {selectedPlayer && playback.mode === 'stopped' && <button className="button subtle compact give-ball-button" type="button"
+                      title={scene.ball?.playerId === selectedPlayer.id ? 'Release ball at player position' : 'Attach ball to selected player'}
+                      onClick={giveBall}><CircleDot size={15} /><span>{scene.ball?.playerId === selectedPlayer.id ? 'Release ball' : 'Give ball'}</span></button>}
+                  </>}
                   {scene.image ? (
                     <>
                       <div className="segmented" aria-label="Image framing">
@@ -518,15 +577,22 @@ export function App() {
                 </div>
               </div>
               <div className="stage-frame">
-                <div className="stage-surface" data-tool={tool}>
-                  <BoardEditor scene={scene} tool={scene.image && tool === 'ball' ? 'select' : tool} options={options}
-                    onCommit={(next) => editScene(() => next)}
-                    onSelectionChange={setSelection} resetKey={`${board.id}:${scene.id}:${history.revision}`} />
+                <div className="stage-surface" data-tool={playback.mode === 'stopped' ? tool : 'playback'}>
+                  {playback.mode === 'stopped'
+                    ? <BoardEditor scene={scene} tool={scene.image && tool === 'ball' ? 'select' : tool} options={options}
+                        onCommit={(next) => editScene(() => next)}
+                        onSelectionChange={setSelection} resetKey={`${board.id}:${scene.id}:${history.revision}`} />
+                    : <BoardVisual scene={playbackScene} clean className="playback-preview" />}
                 </div>
               </div>
 
               <div className="options-bar" aria-label="Tool options">
-                <div className="tool-context"><activeTool.icon size={15} /><strong>{activeTool.label}</strong><span>{selection.players.length > 1 ? `${selection.players.length} players selected` : activeTool.hint}</span></div>
+                <div className="tool-context">
+                  {playback.mode !== 'stopped'
+                    ? <><Play size={15} /><strong>Movement preview</strong><span>Preview only · Reset restores the setup</span></>
+                    : <><activeTool.icon size={15} /><strong>{activeTool.label}</strong><span>{tool === 'ball' ? 'Tap a player to attach the ball' : selection.players.length > 1 ? `${selection.players.length} players selected` : activeTool.hint}</span></>}
+                  {!scene.image && playback.mode === 'stopped' && carrier && <span className="ball-owner">Ball: {carrier.name}</span>}
+                </div>
                 <div className="option-controls">
                   {(arrowTool || arrowSelected) && (
                     <button type="button" className="button subtle compact" aria-label="Curved arrow"
