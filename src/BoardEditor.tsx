@@ -3,11 +3,12 @@ import type { KeyboardEvent, PointerEvent } from 'react'
 import { BoardVisual, getBallPoint, getBoardBounds, getVisibleBounds } from './BoardVisual'
 import type { BoardSelection } from './BoardVisual'
 import type { BoardPlayer, Mark, Point, Scene } from './model'
+import { setMovementTargets } from './tactics'
 import './boardEditor.css'
 
 export type { BoardSelection } from './BoardVisual'
 
-export type BoardTool = 'select' | 'run' | 'pass' | 'carry' | 'draw' | 'shape' | 'highlight' | 'erase' | 'ball'
+export type BoardTool = 'select' | 'move' | 'measure' | 'run' | 'pass' | 'carry' | 'draw' | 'shape' | 'highlight' | 'erase' | 'ball'
 export interface BoardOptions {
   colour: string
   style: Mark['style']
@@ -22,6 +23,7 @@ interface BoardEditorProps {
   options: BoardOptions
   onCommit: (scene: Scene) => void
   resetKey?: string | number
+  groupSelect?: { ids: string[]; nonce: number }
   onSelectionChange?: (selection: BoardSelection) => void
 }
 
@@ -36,6 +38,7 @@ type GestureMode =
   | { kind: 'mark'; mark: Mark; handle?: Handle; origin?: Point }
   | { kind: 'ball'; origin: Point; target?: string; placing: boolean }
   | { kind: 'marquee'; ids: string[] }
+  | { kind: 'motion'; ids: string[]; anchor: Point; toDestination?: boolean }
   | { kind: 'erase'; ids: Set<string> }
   | { kind: 'create'; mark: Mark; source?: BoardPlayer; samples: Point[]; curved: boolean }
 
@@ -51,7 +54,7 @@ const emptySelection: BoardSelection = { players: [] }
 const arrowKinds = new Set<Mark['kind']>(['run', 'pass', 'carry'])
 const markNames: Record<Mark['kind'], string> = {
   run: 'Run arrow', pass: 'Pass arrow', carry: 'Carry arrow', freehand: 'Freehand drawing',
-  line: 'Line', zone: 'Zone', highlight: 'Highlight',
+  line: 'Line', zone: 'Zone', highlight: 'Highlight', distance: 'Distance measurement',
 }
 let markSequence = 0
 
@@ -149,6 +152,7 @@ function newMark(tool: BoardTool, options: BoardOptions, point: Point): Mark {
   if (tool === 'run' || tool === 'pass' || tool === 'carry') kind = tool
   if (tool === 'draw') kind = options.drawMode
   if (tool === 'shape') kind = options.shapeMode
+  if (tool === 'measure') kind = 'distance'
   return {
     id: globalThis.crypto?.randomUUID?.() ?? `mark-${Date.now()}-${++markSequence}`,
     kind, points: [point, point], colour: options.colour, style: options.style,
@@ -223,6 +227,8 @@ function movePlayers(scene: Scene, ids: string[], delta: Point, bounds: Bounds):
     players: scene.players.map(player => moving.has(player.id)
       ? { ...player, point: offset(player.point, movement) }
       : player),
+    motionTargets: Object.fromEntries(Object.entries(scene.motionTargets ?? {}).map(([id, target]) =>
+      [id, moving.has(id) ? offset(target, movement) : target])),
   }
 }
 
@@ -259,13 +265,14 @@ function drawMark(gesture: Gesture & { kind: 'create' }, point: Point, bounds: B
   }
 }
 
-export function BoardEditor({ scene, tool, options, onCommit, resetKey, onSelectionChange }: BoardEditorProps) {
+export function BoardEditor({ scene, tool, options, onCommit, resetKey, groupSelect, onSelectionChange }: BoardEditorProps) {
   const [selection, setSelection] = useState<BoardSelection>(emptySelection)
   const [preview, setPreview] = useState<Scene>()
   const [marquee, setMarquee] = useState<Bounds>()
+  const [armedMotion, setArmedMotion] = useState<{ ids: string[]; anchor: Point } | null>(null)
   const interaction = useRef<Gesture | null>(null)
   const instructionsId = useId()
-  const activeSelection = tool === 'select' || (tool === 'ball' && selection.ball) ? selection : emptySelection
+  const activeSelection = tool === 'select' || tool === 'move' || (tool === 'ball' && selection.ball) ? selection : emptySelection
   const selectedPlayer = activeSelection.players.length === 1
     ? scene.players.find(player => player.id === activeSelection.players[0]) : undefined
   const selectedMark = scene.marks.find(mark => mark.id === activeSelection.annotation)
@@ -284,10 +291,22 @@ export function BoardEditor({ scene, tool, options, onCommit, resetKey, onSelect
   useEffect(() => {
     resetGesture()
     setSelection(emptySelection)
+    setArmedMotion(null)
   }, [scene.id, resetKey])
 
   useEffect(() => {
+    if (!groupSelect || scene.image) return
+    const visible = getVisibleBounds(scene)
+    const ids = groupSelect.ids.filter(id => scene.players.some(player => player.id === id && within(player.point, visible)))
+    setSelection({ players: ids })
+    setArmedMotion(null)
+  // The command nonce intentionally triggers a new selection, even for the same group.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupSelect?.nonce])
+
+  useEffect(() => {
     if (interaction.current) resetGesture()
+    setArmedMotion(null)
   }, [tool])
 
   useEffect(() => {
@@ -346,6 +365,19 @@ export function BoardEditor({ scene, tool, options, onCommit, resetKey, onSelect
         if (!onCanvas || scene.image) return
         mode = { kind: 'marquee', ids }
       }
+    } else if (tool === 'move' && !scene.image) {
+      if (player) {
+        const ids = selection.players.includes(player.id) && selection.players.length > 1
+          ? selection.players : [player.id]
+        mode = { kind: 'motion', ids, anchor: player.point }
+        setSelection({ players: ids })
+        setArmedMotion(null)
+        origin = player.point
+      } else if (armedMotion && onCanvas) {
+        mode = { kind: 'motion', ids: armedMotion.ids, anchor: armedMotion.anchor, toDestination: true }
+        origin = armedMotion.anchor
+        setArmedMotion(null)
+      } else return
     } else if (tool === 'erase') {
       if (!scene.showAnnotations || (!mark && !onCanvas)) return
       mode = { kind: 'erase', ids: new Set(mark ? [mark.id] : []) }
@@ -413,6 +445,21 @@ export function BoardEditor({ scene, tool, options, onCommit, resetKey, onSelect
         next = { ...base, ball: player ? { playerId: player.id, point: player.point } : { point: placement } }
         break
       }
+      case 'motion': {
+        if (!moved && finished && gesture.start.x === gesture.anchor.x && gesture.start.y === gesture.anchor.y) {
+          // A tap arms a destination for the next pitch tap; a drag sets it immediately.
+          // Empty-pitch taps also reach here, so check whether a player was initially hit.
+          if (!gesture.toDestination) {
+            setArmedMotion({ ids: gesture.ids, anchor: gesture.anchor })
+            break
+          }
+        }
+        if (moved || finished) {
+          next = setMovementTargets(base, gesture.ids, delta, bounds)
+          if (finished) setArmedMotion(null)
+        }
+        break
+      }
       case 'marquee':
         if (moved) {
           const rectangle = box(gesture.start, point)
@@ -456,6 +503,7 @@ export function BoardEditor({ scene, tool, options, onCommit, resetKey, onSelect
   function keyDown(event: KeyboardEvent<SVGSVGElement>) {
     if (event.key === 'Escape') {
       resetGesture()
+      setArmedMotion(null)
       setSelection(emptySelection)
       return
     }
@@ -522,6 +570,7 @@ export function BoardEditor({ scene, tool, options, onCommit, resetKey, onSelect
         scene={preview ?? scene}
         selection={activeSelection}
         marquee={marquee}
+        showMotionTargets={tool === 'move'}
         className={`board-editor board-editor--${tool}`}
         role="application"
         aria-label={scene.image ? 'Still image tactics editor' : 'Pitch tactics editor'}
@@ -537,7 +586,7 @@ export function BoardEditor({ scene, tool, options, onCommit, resetKey, onSelect
       <span className="board-editor-a11y" id={instructionsId}>
         In Select mode, use Enter or Shift and Enter to select the next or previous object.
         Arrow keys move it. Hold Shift for larger moves. Delete removes a selected annotation or ball.
-        {!scene.image && ' Space attaches or detaches the ball on the selected player.'}
+        {!scene.image && ' Space attaches or detaches the ball on the selected player. In Move mode drag a player to a destination or tap a player, then tap a destination. You can move selected groups together without drawing arrows.'}
         {' Escape clears the selection.'}
       </span>
       <span className="board-editor-a11y" role="status" aria-atomic="true">{selectionStatus}</span>
