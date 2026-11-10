@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { ArrowLeft, ArrowRight, ArrowRightLeft, CalendarDays, ChevronDown, ExternalLink, FileUp, Search, Users } from 'lucide-react'
+import { AlertCircle, ArrowLeft, ArrowRight, ArrowRightLeft, CalendarDays, ChevronDown, ChevronRight, ExternalLink, FileUp, RefreshCw, Search, Users } from 'lucide-react'
 import { Modal } from './Modal'
 import { loadOpenFootball, londonInput, londonKickoff, OpenFootballFeedError } from './openFootball'
 import type { OpenFootballCatalog } from './openFootball'
@@ -64,6 +64,8 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
   const [requestVersion, setRequestVersion] = useState(0)
   const [selectedCategory, setCategory] = useState<Match['status']>()
   const [query, setQuery] = useState('')
+  const [clubFilter, setClubFilter] = useState('')
+  const [weekFilter, setWeekFilter] = useState('')
   const [shown, setShown] = useState(PAGE_SIZE)
   const [json, setJson] = useState('')
   const [error, setError] = useState('')
@@ -135,8 +137,11 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
   const category = preferredCategory === 'live' && !hasLive ? 'scheduled' : preferredCategory
   const clubs = new Map(catalog?.clubs.map((club) => [club.id, club.name]))
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  const weeks = Array.from(new Set(catalog?.fixtures.map((fixture) => fixture.week).filter((week): week is number => typeof week === 'number') ?? [])).sort((a, b) => a - b)
   const filtered = catalog?.fixtures.filter((fixture) => {
     if (fixture.status !== category) return false
+    if (clubFilter && fixture.homeId !== clubFilter && fixture.awayId !== clubFilter) return false
+    if (weekFilter && fixture.week !== Number(weekFilter)) return false
     const text = [clubs.get(fixture.homeId), clubs.get(fixture.awayId), formatFixtureDate(fixture), 'MW ' + fixture.week].join(' ').toLowerCase()
     return words.every((word) => text.includes(word))
   }).sort((a, b) => {
@@ -167,86 +172,147 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
     catch (error) { setError(error instanceof SyntaxError ? 'Check that the file contains valid JSON.' : errorMessage(error)) }
   }
 
-  return <Modal title="Premier League match" onClose={onClose}>
-    <div className="match-tabs" aria-label="Match data method">
-      <button type="button" aria-pressed={mode === 'fixtures'} onClick={() => switchMode('fixtures')}>Fixtures</button>
-      <button type="button" aria-pressed={mode === 'manual'} onClick={() => { setNewFixture(false); switchMode('manual') }}>{match ? 'Edit fixture' : 'Enter match'}</button>
-      <button type="button" aria-pressed={mode === 'json'} onClick={() => switchMode('json')}>Import JSON</button>
-    </div>
-    {mode === 'fixtures' && <>
-      {feed.state === 'loading' && <p className="match-note" role="status">Checking fixture feed…</p>}
-      {feed.state === 'error' && <div className="match-actions">
-        <p className="match-error" role="alert">{feed.message}</p>
-        <button className="button subtle compact" type="button" onClick={refresh}>Retry</button>
-      </div>}
-      {feed.state === 'ready' && <>
-        <div className="match-actions">
-          <p className="match-note" role="status">
-            <strong>Connected</strong> · {feed.catalog.source}<br />
-            Fetched {dateLabel(feed.catalog.checkedAt)} UK
-            {validTimestamp(feed.catalog.latestUpdatedAt) && <> · Latest fixture update {dateLabel(feed.catalog.latestUpdatedAt)} UK</>}
-          </p>
-          <button className="button subtle compact" type="button" onClick={refresh}>Refresh feed</button>
-        </div>
-        {feed.catalog.coverage && <p className="match-note">
-          {feed.catalog.coverage.completedThrough
-            ? `Latest final score is dated ${dateOnly.format(new Date(feed.catalog.coverage.completedThrough))}.`
-            : 'The source has no final scores yet.'}
-          {feed.catalog.coverage.missingPast > 0 && ` Partial results coverage. ${feed.catalog.coverage.missingPast} past fixtures have no final score in this feed.`}
-        </p>}
-        <div className="match-tabs" role="group" aria-label="Fixture status">
-          {fixtureCategories.filter(({ status }) => status !== 'live' || hasLive).map(({ status, label }) =>
-            <button type="button" key={status} aria-pressed={category === status} onClick={() => {
-              setCategory(status)
-              setShown(PAGE_SIZE)
-            }}>{label}</button>
-          )}
-        </div>
-        <label className="match-search"><Search size={16} /><input aria-label="Search fixtures" value={query} onChange={(event) => {
-          setQuery(event.target.value)
-          setShown(PAGE_SIZE)
-        }} /></label>
-        <div className="fixture-list" aria-label={fixtureCategories.find(({ status }) => status === category)?.label}>
-          {filtered.slice(0, shown).map((fixture) => <button type="button" className="fixture-row" key={fixture.id} aria-current={match?.id === fixture.id || undefined}
-            onClick={() => {
-              if (Date.now() >= feed.expiresAt) { refresh(); return }
-              onChange(fixtureMatch(fixture, feed.catalog, match))
-            }}>
-            <span>{clubs.get(fixture.homeId)} <strong>{fixture.score?.join('–') ?? 'v'}</strong> {clubs.get(fixture.awayId)}</span>
-            <span>
-              {fixture.week ? `MW ${fixture.week} · ` : ''}{formatFixtureDate(fixture)}
-              {fixture.status === 'finished' ? (fixture.score ? ' · Full-time' : ' · Score unavailable') : fixture.status === 'live' ? ' · In progress' : ''}
-              {match?.id === fixture.id ? ' · Refresh fixture' : ''}
-            </span>
-          </button>)}
-          {!filtered.length && <p className="match-note">{query.trim() ? 'No fixtures match your search.' : `No ${category === 'finished' ? 'completed results' : 'upcoming fixtures'} are available from this source.`}</p>}
-        </div>
-        {filtered.length > shown && <button className="button subtle compact" type="button" onClick={() => setShown((count) => count + PAGE_SIZE)}>
-          Show more {category === 'finished' ? 'results' : 'fixtures'}
+  const chooseCategory = (next: Match['status']) => {
+    switchMode('fixtures')
+    setCategory(next)
+    setShown(PAGE_SIZE)
+  }
+  const countFor = (status: Match['status']) => catalog?.fixtures.filter((fixture) => fixture.status === status).length ?? 0
+
+  return <Modal title="Choose a match" kind="match" onClose={onClose}>
+    <div className="match-browser">
+      <nav className="match-browser-sidebar" aria-label="Match navigation">
+        <div className="match-browser-navheading">PREMIER LEAGUE</div>
+        <button type="button" className="match-browser-navitem" aria-current={mode === 'fixtures' && category === 'scheduled' ? 'page' : undefined} onClick={() => chooseCategory('scheduled')}>
+          <CalendarDays size={17} /><span>Fixtures</span>{catalog && <small>{countFor('scheduled')}</small>}
+        </button>
+        <button type="button" className="match-browser-navitem" aria-current={mode === 'fixtures' && category === 'finished' ? 'page' : undefined} onClick={() => chooseCategory('finished')}>
+          <CalendarDays size={17} /><span>Results</span>{catalog && <small>{countFor('finished')}</small>}
+        </button>
+        {hasLive && <button type="button" className="match-browser-navitem" aria-current={mode === 'fixtures' && category === 'live' ? 'page' : undefined} onClick={() => chooseCategory('live')}>
+          <span className="match-live-indicator" /><span>Live</span><small>{countFor('live')}</small>
         </button>}
-        <p className="match-note">Matchday lineups must be supplied separately.</p>
-      </>}
-    </>}
-    {mode === 'manual' && <>
-      {match && <button type="button" className="button subtle" onClick={() => setNewFixture(!newFixture)}>
-        {newFixture ? 'Edit selected fixture' : 'Enter another match'}
-      </button>}
-      <ManualFixture key={newFixture ? 'new' : match?.id} match={newFixture ? null : match} onChange={onChange} />
-    </>}
-    {mode === 'json' && <form className="stack match-form" onSubmit={importJson}>
-      <div className="match-actions">
-        <label className="button subtle match-file"><FileUp size={15} /> Open JSON<input type="file" accept=".json,application/json" aria-label="Open match JSON" onChange={(event) => { void loadJson(event.currentTarget.files?.[0]); event.currentTarget.value = '' }} /></label>
-        {match && <button type="button" className="button subtle" onClick={() => { setJson(JSON.stringify(match, null, 2)); setError('') }}>Use selected match</button>}
-      </div>
-      <label className="field">Match JSON<textarea rows={10} value={json} onChange={(event) => setJson(event.target.value)} spellCheck={false} required /></label>
-      <details className="match-schema"><summary>JSON fields</summary>
-        <p>Match requires id, home and away. Each club requires id and name. Supply fixture source, kickoff (ISO 8601), score [home, away] and officialUrl when available.</p>
-        <p>Club squad entries use id, name, number and optional role (GK, DEF, MID, FWD). xi and bench list those player IDs. Use verification or benchVerification set to manual or verified. Verified data requires a source URL. Put players in formation order, goalkeeper first.</p>
-        <p>Substitutions use teamId, off, on, minute and optional addedTime. Use verification set to verified and supply a source URL for confirmed events.</p>
-      </details>
-      {error && <p className="match-error" role="alert">{error}</p>}
-      <button className="button primary match-submit" type="submit">Import match</button>
-    </form>}
+        <div className="match-browser-sidebar-spacer" />
+        <div className="match-browser-navheading">OTHER OPTIONS</div>
+        <button type="button" className="match-browser-navitem" aria-current={mode === 'manual' ? 'page' : undefined} onClick={() => { setNewFixture(false); switchMode('manual') }}>
+          <Users size={17} /><span>{match ? 'Edit match' : 'Enter match'}</span>
+        </button>
+        <button type="button" className="match-browser-navitem" aria-current={mode === 'json' ? 'page' : undefined} onClick={() => switchMode('json')}>
+          <FileUp size={17} /><span>Import JSON</span>
+        </button>
+      </nav>
+      <section className="match-browser-main" aria-label="Match browser">
+        {mode === 'fixtures' && <>
+          <header className="match-browser-heading">
+            <div>
+              <h3>{category === 'scheduled' ? 'Upcoming fixtures' : category === 'finished' ? 'Completed results' : 'Live matches'}</h3>
+              <p>Premier League · 2026/27</p>
+            </div>
+            <button type="button" className="button subtle compact" onClick={refresh} disabled={feed.state === 'loading'}>
+              <RefreshCw size={14} /> Refresh
+            </button>
+          </header>
+          {feed.state === 'loading' && <div className="match-browser-state" role="status">Loading match data…</div>}
+          {feed.state === 'error' && <div className="match-browser-state" role="alert">
+            <AlertCircle size={20} />
+            <strong>Fixtures unavailable</strong>
+            <p>{feed.message}</p>
+            <button className="button subtle" type="button" onClick={refresh}>Try again</button>
+          </div>}
+          {feed.state === 'ready' && <>
+            <div className="match-browser-controls">
+              <label className="match-search"><Search size={17} />
+                <input aria-label="Search matches" placeholder="Search teams, dates or matchweeks" value={query} onChange={(event) => { setQuery(event.target.value); setShown(PAGE_SIZE) }} />
+              </label>
+              <label className="match-browser-filter">
+                <span>Club</span>
+                <select aria-label="Filter by club" value={clubFilter} onChange={(event) => { setClubFilter(event.target.value); setShown(PAGE_SIZE) }}>
+                  <option value="">All clubs</option>
+                  {[...catalog!.clubs].sort((a, b) => a.name.localeCompare(b.name)).map((club) =>
+                    <option key={club.id} value={club.id}>{club.name}</option>)}
+                </select>
+              </label>
+              <label className="match-browser-filter">
+                <span>Matchweek</span>
+                <select aria-label="Filter by matchweek" value={weekFilter} onChange={(event) => { setWeekFilter(event.target.value); setShown(PAGE_SIZE) }}>
+                  <option value="">All weeks</option>
+                  {weeks.map((week) => <option key={week} value={String(week)}>MW {week}</option>)}
+                </select>
+              </label>
+            </div>
+            {feed.catalog.coverage && feed.catalog.coverage.missingPast > 0 && <div className="match-browser-warning" role="status">
+              <AlertCircle size={15} />
+              <span>Results are incomplete. {feed.catalog.coverage.completedThrough
+                ? 'Latest recorded final score: ' + dateOnly.format(new Date(feed.catalog.coverage.completedThrough)) + '.'
+                : 'No final scores have been recorded.'} Check results before broadcast.</span>
+            </div>}
+            <div className="match-browser-count">{filtered.length} {category === 'finished' ? 'results' : 'fixtures'}</div>
+            <div className="match-browser-list" aria-label={fixtureCategories.find(({ status }) => status === category)?.label}>
+              {filtered.slice(0, shown).map((fixture, index, visible) => {
+                const keyDate = fixture.kickoff?.slice(0, 10) ?? fixture.date ?? ''
+                const previous = visible[index - 1]
+                const previousDate = previous?.kickoff?.slice(0, 10) ?? previous?.date ?? ''
+                return <div className="match-browser-listitem" key={fixture.id}>
+                  {(index === 0 || previousDate !== keyDate) && <div className="match-browser-date">{keyDate ? dateOnly.format(new Date(keyDate)) : 'Date to be confirmed'}</div>}
+                  <button type="button" className="fixture-row" aria-current={match?.id === fixture.id || undefined}
+                    onClick={() => {
+                      if (Date.now() >= feed.expiresAt) { refresh(); return }
+                      onChange(fixtureMatch(fixture, feed.catalog, match))
+                    }}>
+                    <span className="match-browser-matchup">
+                      <span>{clubs.get(fixture.homeId)}</span>
+                      <strong className="match-browser-score">{fixture.score?.join(' – ') ?? 'v'}</strong>
+                      <span>{clubs.get(fixture.awayId)}</span>
+                    </span>
+                    <span className="match-browser-row-meta">
+                      <small>{fixture.week ? 'MW ' + fixture.week : 'Premier League'}</small>
+                      <span>{fixture.kickoff ? new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' }).format(new Date(fixture.kickoff)) : 'Time TBC'}</span>
+                    </span>
+                    <ChevronRight size={17} className="match-browser-row-chevron" />
+                  </button>
+                </div>
+              })}
+              {!filtered.length && <div className="match-browser-empty">{query.trim() || clubFilter || weekFilter ? 'No matches found. Try a different search or filter.' : 'No matches available in this category.'}</div>}
+              {filtered.length > shown && <button className="match-browser-more" type="button" onClick={() => setShown((count) => count + PAGE_SIZE)}>Show more {category === 'finished' ? 'results' : 'fixtures'}</button>}
+            </div>
+            <footer className="match-browser-footer">
+              <span>Lineups can be added after selecting a match.</span>
+              <details className="match-browser-source">
+                <summary>Data source &amp; coverage</summary>
+                <p>{feed.catalog.source}. Fetched {dateLabel(feed.catalog.checkedAt)} UK.
+                  {validTimestamp(feed.catalog.latestUpdatedAt) && <> Latest source update: {dateLabel(feed.catalog.latestUpdatedAt)} UK.</>}
+                  {feed.catalog.coverage?.missingPast ? ' ' + feed.catalog.coverage.missingPast + ' past matches have no final score in this feed.' : ''}
+                </p>
+              </details>
+            </footer>
+          </>}
+        </>}
+        {mode === 'manual' && <div className="match-browser-editor">
+          <header className="match-browser-heading"><div><h3>{match && !newFixture ? 'Edit match' : 'Enter match'}</h3><p>Enter a match you have verified</p></div></header>
+          {match && <button type="button" className="button subtle" onClick={() => setNewFixture(!newFixture)}>
+            {newFixture ? 'Edit selected match' : 'Enter another match'}
+          </button>}
+          <ManualFixture key={newFixture ? 'new' : match?.id} match={newFixture ? null : match} onChange={onChange} />
+        </div>}
+        {mode === 'json' && <div className="match-browser-editor">
+          <header className="match-browser-heading"><div><h3>Import match data</h3><p>Import an authorised match file</p></div></header>
+          <form className="stack match-form" onSubmit={importJson}>
+            <div className="match-actions">
+              <label className="button subtle match-file"><FileUp size={15} /> Open JSON<input type="file" accept=".json,application/json" aria-label="Open match JSON" onChange={(event) => { void loadJson(event.currentTarget.files?.[0]); event.currentTarget.value = '' }} /></label>
+              {match && <button type="button" className="button subtle" onClick={() => { setJson(JSON.stringify(match, null, 2)); setError('') }}>Use selected match</button>}
+            </div>
+            <label className="field">Match JSON<textarea rows={10} value={json} onChange={(event) => setJson(event.target.value)} spellCheck={false} required /></label>
+            <details className="match-schema"><summary>JSON fields</summary>
+              <p>Match requires id, home and away. Each club requires id and name. Supply fixture source, kickoff (ISO 8601), score [home, away] and officialUrl when available.</p>
+              <p>Club squad entries use id, name, number and optional role (GK, DEF, MID, FWD). xi and bench list those player IDs. Use verification or benchVerification set to manual or verified. Verified data requires a source URL. Put players in formation order, goalkeeper first.</p>
+              <p>Substitutions use teamId, off, on, minute and optional addedTime. Use verification set to verified and supply a source URL for confirmed events.</p>
+            </details>
+            {error && <p className="match-error" role="alert">{error}</p>}
+            <button className="button primary match-submit" type="submit">Import match</button>
+          </form>
+        </div>}
+      </section>
+    </div>
   </Modal>
 }
 
