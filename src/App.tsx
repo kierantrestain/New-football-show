@@ -143,7 +143,7 @@ export function App() {
   const dirty = board !== saved && (saved !== undefined || history.past.length > 0 || board.updatedAt > 0)
   const selectedMark = scene.marks.find((mark) => mark.id === selection.annotation)
   const activeTool = tools.find((item) => item.id === tool)!
-  const optionsVisible = !['ball', 'erase'].includes(tool)
+  const optionsVisible = !['ball', 'erase', 'move'].includes(tool)
   const arrowTool = tool === 'run' || tool === 'pass' || tool === 'carry'
   const arrowSelected = tool === 'select' && (selectedMark?.kind === 'run' || selectedMark?.kind === 'pass' || selectedMark?.kind === 'carry')
   const canPlay = scene.players.length > 0 && hasPlayableMovement(scene)
@@ -661,7 +661,7 @@ export function App() {
                     <span className="movement-help">Drag a player to its target. Selected groups move together.</span>
                     {plannedMoves > 0 && <button className="button subtle compact" type="button"
                       onClick={() => editScene(item => clearMovementTargets(item))}>Clear moves ({plannedMoves})</button>}
-                  </>
+                  </>}
                   {optionsVisible && (tool !== 'select' || !!selectedMark) && (
                     <>
                       <select aria-label="Line style" value={tool === 'select' && selectedMark ? selectedMark.style : options.style} onChange={(event) => changeInk({ style: event.target.value as BoardOptions['style'] })}>
