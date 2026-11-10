@@ -12,8 +12,7 @@ export type Mark = {
   colour: string
   style: MarkStyle
 }
-export type BoardPlayer = Omit<Player, 'number'> & {
-  number: number
+export type BoardPlayer = Player & {
   teamId: string
   colour: string
   point: Point
@@ -104,12 +103,11 @@ export function syncPlayers(scene: Scene, match: Match | null, resetSide?: Side)
       const keeper = starters.find(({ player }) => player.role === 'GK')
       const slots = keeper ? [keeper, ...starters.filter((slot) => slot !== keeper)] : starters
       for (const { player, slotId } of activeLineup(team, events, scene.minute, scene.addedTime)) {
-        if (player.number === null) continue
         const oldPlayer = previous.find((item) => item.id === player.id)
         const oldSlot = previous.find((item) => item.slotId === slotId)
         const fallback = points[slots.findIndex((slot) => slot.slotId === slotId)]
         const point = (resetSide === side ? undefined : oldPlayer?.point ?? oldSlot?.point) ?? fallback
-        if (point) players.push({ ...player, number: player.number, teamId: team.id, colour: team.colour, slotId, point })
+        if (point) players.push({ ...player, teamId: team.id, colour: team.colour, slotId, point })
       }
     }
   }

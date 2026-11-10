@@ -270,7 +270,7 @@ export function BoardEditor({ scene, tool, options, onCommit, resetKey, onSelect
     ? scene.players.find(player => player.id === activeSelection.players[0]) : undefined
   const selectedMark = scene.marks.find(mark => mark.id === activeSelection.annotation)
   const selectionStatus = selectedPlayer
-    ? `Selected ${selectedPlayer.number}, ${selectedPlayer.name}${scene.ball?.playerId === selectedPlayer.id ? ', with the ball' : ''}.`
+    ? `Selected ${selectedPlayer.number === null ? '' : `${selectedPlayer.number}, `}${selectedPlayer.name}${scene.ball?.playerId === selectedPlayer.id ? ', with the ball' : ''}.`
     : activeSelection.players.length > 1 ? `${activeSelection.players.length} players selected.`
       : selectedMark ? `${markNames[selectedMark.kind]} selected.`
         : activeSelection.ball ? 'Ball selected.' : 'No object selected.'

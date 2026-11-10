@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { ArrowLeft, ArrowRight, ArrowRightLeft, CalendarDays, ChevronDown, ExternalLink, FileUp, Search, Users } from 'lucide-react'
 import { Modal } from './Modal'
-import { loadOpenFootball, londonInput, londonKickoff, OpenFootballFeedError } from './openFootball'
-import type { OpenFootballCatalog } from './openFootball'
+import { loadEspnFixtures } from './espnFixtures'
+import type { EspnCatalog } from './espnFixtures'
+import { hydrateEspnMatch } from './espnMatch'
 import {
-  FORMATIONS, TEAM_COLOURS, activeLineup, fixtureMatch, mergeMatchEvents, minuteLabel, minuteOrder, parseMatch,
+  FORMATIONS, TEAM_COLOURS, activeLineup, fixtureMatch, londonInput, londonKickoff, mergeMatchEvents, minuteLabel, minuteOrder, parseMatch,
 } from './match'
-import type { FixtureCatalog, Formation, Match, Player, Side, Substitution, Team, Verification } from './match'
+import type { Fixture, Formation, Match, Player, Side, Substitution, Team, Verification } from './match'
 
 const matchDate = new Intl.DateTimeFormat('en-GB', {
   day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London',
@@ -19,29 +20,16 @@ const verificationLabel = (status: Verification) => status === 'verified' ? 'Sou
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'The match could not be saved.'
 
 type SelectorProps = { match: Match | null; onChange: (match: Match) => void }
-type DatedFixture = FixtureCatalog['fixtures'][number] & { date?: string }
-type TimedFixtureCatalog = Omit<FixtureCatalog, 'fixtures'> & {
-  fixtures: DatedFixture[]
-  checkedAt: string
-  latestUpdatedAt?: string | null
-  freshnessSec: number
-  coverage?: OpenFootballCatalog['coverage']
-}
 type FixtureFeed = { state: 'loading' } | { state: 'error'; message: string } |
-  { state: 'ready'; catalog: TimedFixtureCatalog; expiresAt: number }
+  { state: 'ready'; catalog: EspnCatalog; expiresAt: number }
 
 const fixtureCategories = [
   { status: 'scheduled', label: 'Upcoming fixtures' },
   { status: 'finished', label: 'Completed results' },
   { status: 'live', label: 'Live' },
 ] as const
-const dateOnly = new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeZone: 'UTC' })
-const formatFixtureDate = (fixture: DatedFixture) => fixture.kickoff || !fixture.date
-  ? dateLabel(fixture.kickoff)
-  : `${dateOnly.format(new Date(fixture.date))} · Kick-off TBC`
 const PAGE_SIZE = 20
-const connectionError = 'Could not connect to the fixture feed. Retry, enter a match or import JSON.'
-const validTimestamp = (value?: string | null): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value))
+const connectionError = 'ESPN fixtures are unavailable. Retry or choose another date.'
 
 export function MatchSelector({ match, onChange }: SelectorProps) {
   const [open, setOpen] = useState(false)
@@ -62,6 +50,11 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
   const [newFixture, setNewFixture] = useState(false)
   const [feed, setFeed] = useState<FixtureFeed>({ state: 'loading' })
   const [requestVersion, setRequestVersion] = useState(0)
+  const [windowOffset, setWindowOffset] = useState(0)
+  const [loadingMatch, setLoadingMatch] = useState(false)
+  const [matchError, setMatchError] = useState('')
+  const selectionRequest = useRef<AbortController | null>(null)
+  useEffect(() => () => selectionRequest.current?.abort(), [])
   const [selectedCategory, setCategory] = useState<Match['status']>()
   const [query, setQuery] = useState('')
   const [shown, setShown] = useState(PAGE_SIZE)
@@ -75,58 +68,21 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
     if (mode !== 'fixtures') return
     const request = new AbortController()
     let expiryTimer: number | undefined
-    const timeout = window.setTimeout(() => {
-      setFeed({ state: 'error', message: connectionError })
-      request.abort()
-    }, 12_000)
-
-    function showCatalogue(catalog: TimedFixtureCatalog, serverDate: string | null) {
-      const { freshnessSec, checkedAt } = catalog
-      if (!validTimestamp(checkedAt) || typeof freshnessSec !== 'number' || !Number.isFinite(freshnessSec) || freshnessSec <= 0) {
-        setFeed({ state: 'error', message: 'Fixture data freshness could not be verified. Retry, enter a match or import JSON.' })
-        return
-      }
-      const now = Date.now()
-      const feedNow = validTimestamp(serverDate) ? Date.parse(serverDate) : now
-      const age = Math.max(0, feedNow - Date.parse(checkedAt))
-      const expiresAt = now + freshnessSec * 1000 - age
-      if (expiresAt <= now) {
-        setFeed({ state: 'error', message: 'Fixture data has expired. Retry, enter a match or import JSON.' })
-        return
-      }
-      setFeed({ state: 'ready', catalog, expiresAt })
-      expiryTimer = window.setTimeout(refresh, expiresAt - now)
-    }
-
-    fetch('/api/fixtures', { signal: request.signal, cache: 'no-store' })
-      .then(async (response) => {
-        const data = await response.json().catch(() => null)
+    loadEspnFixtures(windowOffset, request.signal)
+      .then((catalog) => {
         if (request.signal.aborted) return
-        if (response.status === 503 && data?.code === 'NO_PROVIDER') {
-          const catalog = await loadOpenFootball(request.signal)
-          if (!request.signal.aborted) showCatalogue(catalog, null)
-          return
-        }
-        if (!response.ok || !data || typeof data.source !== 'string' || !Array.isArray(data.fixtures) || !Array.isArray(data.clubs)) {
-          setFeed({ state: 'error', message: typeof data?.message === 'string' ? data.message : connectionError })
-          return
-        }
-        showCatalogue(data, response.headers.get('Date'))
+        const expiresAt = Date.parse(catalog.checkedAt) + catalog.freshnessSec * 1000
+        setFeed({ state: 'ready', catalog, expiresAt })
+        expiryTimer = window.setTimeout(refresh, Math.max(1000, expiresAt - Date.now()))
       })
-      .catch((error: unknown) => {
-        if (!request.signal.aborted) setFeed({
-          state: 'error',
-          message: error instanceof OpenFootballFeedError
-            ? `${error.message} Retry, enter a match or import JSON.` : connectionError,
-        })
+      .catch(() => {
+        if (!request.signal.aborted) setFeed({ state: 'error', message: connectionError })
       })
-      .finally(() => window.clearTimeout(timeout))
     return () => {
       request.abort()
-      window.clearTimeout(timeout)
       window.clearTimeout(expiryTimer)
     }
-  }, [mode, refresh, requestVersion])
+  }, [mode, refresh, requestVersion, windowOffset])
 
   const catalog = feed.state === 'ready' ? feed.catalog : null
   const hasLive = catalog?.fixtures.some((fixture) => fixture.status === 'live') ?? false
@@ -137,20 +93,54 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
   const filtered = catalog?.fixtures.filter((fixture) => {
     if (fixture.status !== category) return false
-    const text = [clubs.get(fixture.homeId), clubs.get(fixture.awayId), formatFixtureDate(fixture), 'MW ' + fixture.week].join(' ').toLowerCase()
+    const text = [clubs.get(fixture.homeId), clubs.get(fixture.awayId), dateLabel(fixture.kickoff), 'MW ' + fixture.week].join(' ').toLowerCase()
     return words.every((word) => text.includes(word))
   }).sort((a, b) => {
     const current = Number(b.id === match?.id) - Number(a.id === match?.id)
-    const dateA = a.kickoff ?? a.date ?? ''
-    const dateB = b.kickoff ?? b.date ?? ''
+    const dateA = a.kickoff ?? ''
+    const dateB = b.kickoff ?? ''
     const undated = Number(!dateA) - Number(!dateB)
     const byDate = dateA.localeCompare(dateB)
     return current || undated || (category === 'scheduled' ? byDate : -byDate)
   }) ?? []
   const switchMode = (next: typeof mode) => {
+    selectionRequest.current?.abort()
+    selectionRequest.current = null
+    setLoadingMatch(false)
+    setMatchError('')
     setError('')
     if (next === 'fixtures' && mode !== 'fixtures') setFeed({ state: 'loading' })
     setMode(next)
+  }
+
+  function changeWindow(direction: -1 | 1) {
+    setFeed({ state: 'loading' })
+    setMatchError('')
+    setShown(PAGE_SIZE)
+    const next = windowOffset + direction
+    setWindowOffset(next)
+    setCategory(next < 0 ? 'finished' : 'scheduled')
+  }
+
+  async function selectFixture(fixture: Fixture) {
+    if (feed.state !== 'ready' || selectionRequest.current) return
+    if (Date.now() >= feed.expiresAt) { refresh(); return }
+    const controller = new AbortController()
+    selectionRequest.current = controller
+    setLoadingMatch(true)
+    setMatchError('')
+    try {
+      const selected = await hydrateEspnMatch(fixtureMatch(fixture, feed.catalog, match), controller.signal)
+      if (!selected.home.squad.length || !selected.away.squad.length) throw new Error('ESPN squad data unavailable')
+      if (!controller.signal.aborted) onChange(selected)
+    } catch {
+      if (!controller.signal.aborted) setMatchError('ESPN could not load both squads. Select the match again to retry.')
+    } finally {
+      if (selectionRequest.current === controller) {
+        selectionRequest.current = null
+        if (!controller.signal.aborted) setLoadingMatch(false)
+      }
+    }
   }
 
   const loadJson = async (file: File | undefined) => {
@@ -178,22 +168,24 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
       {feed.state === 'error' && <div className="match-actions">
         <p className="match-error" role="alert">{feed.message}</p>
         <button className="button subtle compact" type="button" onClick={refresh}>Retry</button>
+        {windowOffset !== 0 && <button className="button subtle compact" type="button" onClick={() => {
+          setWindowOffset(0)
+          setCategory(undefined)
+          refresh()
+        }}>Current fixtures</button>}
       </div>}
       {feed.state === 'ready' && <>
         <div className="match-actions">
-          <p className="match-note" role="status">
-            <strong>Connected</strong> · {feed.catalog.source}<br />
-            Fetched {dateLabel(feed.catalog.checkedAt)} UK
-            {validTimestamp(feed.catalog.latestUpdatedAt) && <> · Latest fixture update {dateLabel(feed.catalog.latestUpdatedAt)} UK</>}
-          </p>
-          <button className="button subtle compact" type="button" onClick={refresh}>Refresh feed</button>
+          <p className="match-note" role="status">ESPN · Checked {dateLabel(feed.catalog.checkedAt)} UK</p>
+          <button className="button subtle compact" type="button" onClick={refresh} disabled={loadingMatch}>Refresh feed</button>
         </div>
-        {feed.catalog.coverage && <p className="match-note">
-          {feed.catalog.coverage.completedThrough
-            ? `Latest final score is dated ${dateOnly.format(new Date(feed.catalog.coverage.completedThrough))}.`
-            : 'The source has no final scores yet.'}
-          {feed.catalog.coverage.missingPast > 0 && ` Partial results coverage. ${feed.catalog.coverage.missingPast} past fixtures have no final score in this feed.`}
-        </p>}
+        <div className="match-actions" aria-label="Fixture dates">
+          <button className="button subtle compact" type="button" disabled={!feed.catalog.hasEarlier || loadingMatch} onClick={() => changeWindow(-1)}>Earlier</button>
+          <span className="match-note">{feed.catalog.windowLabel}</span>
+          <button className="button subtle compact" type="button" disabled={!feed.catalog.hasLater || loadingMatch} onClick={() => changeWindow(1)}>Later</button>
+        </div>
+        {loadingMatch && <p className="match-note" role="status">Loading ESPN squads and lineup…</p>}
+        {matchError && <p className="match-error" role="alert">{matchError}</p>}
         <div className="match-tabs" role="group" aria-label="Fixture status">
           {fixtureCategories.filter(({ status }) => status !== 'live' || hasLive).map(({ status, label }) =>
             <button type="button" key={status} aria-pressed={category === status} onClick={() => {
@@ -208,13 +200,10 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
         }} /></label>
         <div className="fixture-list" aria-label={fixtureCategories.find(({ status }) => status === category)?.label}>
           {filtered.slice(0, shown).map((fixture) => <button type="button" className="fixture-row" key={fixture.id} aria-current={match?.id === fixture.id || undefined}
-            onClick={() => {
-              if (Date.now() >= feed.expiresAt) { refresh(); return }
-              onChange(fixtureMatch(fixture, feed.catalog, match))
-            }}>
+            disabled={loadingMatch} onClick={() => { void selectFixture(fixture) }}>
             <span>{clubs.get(fixture.homeId)} <strong>{fixture.score?.join('–') ?? 'v'}</strong> {clubs.get(fixture.awayId)}</span>
             <span>
-              {fixture.week ? `MW ${fixture.week} · ` : ''}{formatFixtureDate(fixture)}
+              {fixture.week ? `MW ${fixture.week} · ` : ''}{dateLabel(fixture.kickoff)}
               {fixture.status === 'finished' ? (fixture.score ? ' · Full-time' : ' · Score unavailable') : fixture.status === 'live' ? ' · In progress' : ''}
               {match?.id === fixture.id ? ' · Refresh fixture' : ''}
             </span>
@@ -224,7 +213,7 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
         {filtered.length > shown && <button className="button subtle compact" type="button" onClick={() => setShown((count) => count + PAGE_SIZE)}>
           Show more {category === 'finished' ? 'results' : 'fixtures'}
         </button>}
-        <p className="match-note">Matchday lineups must be supplied separately.</p>
+        <p className="match-note">ESPN squads load when you select a match.</p>
       </>}
     </>}
     {mode === 'manual' && <>
@@ -316,7 +305,7 @@ type MatchPanelProps = {
   onSubstitution: (event: Substitution) => void
 }
 
-type TeamDialog = { side: Side; type: 'lineup' | 'sub' }
+type TeamDialog = { side: Side; type: 'lineup' | 'swap' | 'sub' }
 
 export function MatchPanel({ match, formations, minute, addedTime = 0, substitutions, onFormation, onTeamChange, onMinute, onSubstitution }: MatchPanelProps) {
   const [dialog, setDialog] = useState<TeamDialog | null>(null)
@@ -357,27 +346,34 @@ export function MatchPanel({ match, formations, minute, addedTime = 0, substitut
       onSave={(nextMinute, nextAddedTime) => { onMinute(nextMinute, nextAddedTime); setCustomMinute(false) }} />}
     {(['home', 'away'] as const).map((side) => <TeamCard key={match[side].id}
       team={match[side]} side={side} formation={formations[side]} minute={minute} addedTime={addedTime} events={events}
-      onFormation={(formation) => onFormation(side, formation)} onEdit={() => setDialog({ side, type: 'lineup' })}
+      espn={match.source === 'ESPN'} onFormation={(formation) => onFormation(side, formation)}
+      onEdit={() => setDialog({ side, type: match.source === 'ESPN' ? 'swap' : 'lineup' })}
       onSub={() => setDialog({ side, type: 'sub' })} />)}
     {dialog?.type === 'lineup' && <LineupDialog match={match} side={dialog.side}
+      onClose={() => setDialog(null)} onSave={(team) => { onTeamChange(dialog.side, team); setDialog(null) }} />}
+    {dialog?.type === 'swap' && <SquadSwap team={match[dialog.side]}
       onClose={() => setDialog(null)} onSave={(team) => { onTeamChange(dialog.side, team); setDialog(null) }} />}
     {dialog?.type === 'sub' && <SubDialog team={match[dialog.side]} minute={minute} addedTime={addedTime} events={events} matchEvents={match.substitutions}
       onClose={() => setDialog(null)} onSave={(event) => { onSubstitution(event); setDialog(null) }} />}
   </div>
 }
 
-function TeamCard({ team, side, formation, minute, addedTime, events, onFormation, onEdit, onSub }: {
-  team: Team; side: Side; formation: Formation; minute: number; addedTime: number; events: Substitution[]
+function TeamCard({ team, side, formation, minute, addedTime, events, espn, onFormation, onEdit, onSub }: {
+  team: Team; side: Side; formation: Formation; minute: number; addedTime: number; events: Substitution[]; espn: boolean
   onFormation: (formation: Formation) => void; onEdit: () => void; onSub: () => void
 }) {
-  const [tab, setTab] = useState<'xi' | 'bench' | 'events'>('xi')
+  const [tab, setTab] = useState<'xi' | 'bench' | 'squad' | 'events'>('xi')
   const starters = activeLineup(team, events, minute, addedTime).map(({ player }) => player)
   const bench = team.bench.flatMap((id) => team.squad.find((player) => player.id === id) ?? [])
   const teamEvents = events.filter((event) => event.teamId === team.id)
   const Direction = side === 'home' ? ArrowRight : ArrowLeft
-  const statusText = (status: Verification) => status === 'verified' && team.source
-    ? <a href={team.source} target="_blank" rel="noreferrer">{verificationLabel(status)} <ExternalLink size={10} /></a>
-    : verificationLabel(status)
+  const statusText = (status: Verification, label = verificationLabel(status)) => status === 'verified' && team.source
+    ? <a href={team.source} target="_blank" rel="noreferrer">{label} <ExternalLink size={10} /></a>
+    : label
+  const lineupStatus = team.selection === 'provisional' ? 'Provisional XI from ESPN squad'
+    : team.selection === 'reconstruction' ? 'Reconstructed XI from ESPN squad'
+    : statusText(team.verification, espn && team.verification === 'verified' ? 'Confirmed starting XI' : undefined)
+  const canSwap = !!team.selection && team.squad.some((player) => !team.xi.includes(player.id))
   const showPlayers = (players: Player[]) => <ul className="team-roster">
     {players.map((player) => <li key={player.id}><b>{player.number ?? '–'}</b><span>{player.name}</span>{player.role === 'GK' && <small>GK</small>}</li>)}
   </ul>
@@ -392,7 +388,11 @@ function TeamCard({ team, side, formation, minute, addedTime, events, onFormatio
     </select></label>
     {!team.xi.length ? <div className="team-empty">
       <p>Starting XI unavailable</p>
-      <button type="button" className="button subtle" onClick={onEdit}>{team.squad.length ? 'Select XI' : 'Enter lineup'}</button>
+      {espn ? <p>ESPN did not supply enough lineup data. Reopen the fixture to retry.</p>
+        : <button type="button" className="button subtle" onClick={onEdit}>{team.squad.length ? 'Select XI' : 'Enter lineup'}</button>}
+      {espn && team.squad.length > 0 && <details className="bench-preview">
+        <summary>Squad · {team.squad.length}</summary>{showPlayers(team.squad)}
+      </details>}
       {bench.length > 0 && <details className="bench-preview">
         <summary>Bench · {bench.length}</summary>
         <p className="team-status">{statusText(team.benchVerification ?? team.verification)}</p>
@@ -402,10 +402,12 @@ function TeamCard({ team, side, formation, minute, addedTime, events, onFormatio
       <div className="match-tabs team-tabs" aria-label={`${team.name} team view`}>
         <button type="button" aria-pressed={tab === 'xi'} onClick={() => setTab('xi')}>XI</button>
         <button type="button" aria-pressed={tab === 'bench'} onClick={() => setTab('bench')}>Bench</button>
+        {espn && <button type="button" aria-pressed={tab === 'squad'} onClick={() => setTab('squad')}>Squad</button>}
         <button type="button" aria-pressed={tab === 'events'} onClick={() => setTab('events')}>Changes</button>
       </div>
-      {tab === 'xi' && <><p className="team-status">{minute ? `Shape at ${minuteLabel(minute, addedTime)}` : statusText(team.verification)}</p>{showPlayers(starters)}</>}
+      {tab === 'xi' && <><p className="team-status">{lineupStatus}{minute > 0 && ` · Shape at ${minuteLabel(minute, addedTime)}`}</p>{showPlayers(starters)}</>}
       {tab === 'bench' && <><p className="team-status">{bench.length ? statusText(team.benchVerification ?? team.verification) : 'Bench unavailable'}</p>{showPlayers(bench)}</>}
+      {tab === 'squad' && <><p className="team-status">ESPN squad · {team.squad.length} players</p>{showPlayers(team.squad)}</>}
       {tab === 'events' && <ul className="sub-history">
         {!teamEvents.length && <li className="match-note">No substitution records.</li>}
         {teamEvents.map((event) => <li key={`${event.off}:${event.on}:${event.minute}`}>
@@ -417,13 +419,41 @@ function TeamCard({ team, side, formation, minute, addedTime, events, onFormatio
         </li>)}
       </ul>}
       <div className="team-actions">
-        <button type="button" className="button subtle" onClick={onEdit}>Edit lineup</button>
-        <button type="button" className="button subtle" onClick={onSub} disabled={!bench.length} title={bench.length ? undefined : 'Add the matchday bench first'}>
+        {!espn && <button type="button" className="button subtle" onClick={onEdit}>Edit lineup</button>}
+        {espn && canSwap && <button type="button" className="button subtle" onClick={onEdit}>Swap player</button>}
+        {(!espn || bench.length > 0) && <button type="button" className="button subtle" onClick={onSub} disabled={!bench.length}>
           <ArrowRightLeft size={13} /> Substitution
-        </button>
+        </button>}
       </div>
     </>}
   </section>
+}
+
+function SquadSwap({ team, onClose, onSave }: { team: Team; onClose: () => void; onSave: (team: Team) => void }) {
+  const [off, setOff] = useState('')
+  const [on, setOn] = useState('')
+  const starters = activeLineup(team, [], 0).map(({ player }) => player)
+  const outgoing = starters.find((player) => player.id === off)
+  const replacements = team.squad.filter((player) => !team.xi.includes(player.id) &&
+    (player.role === 'GK') === (outgoing?.role === 'GK'))
+  const incoming = replacements.find((player) => player.id === on)
+  return <Modal title={`${team.name} squad swap`} onClose={onClose}>
+    <form className="stack match-form" onSubmit={(event) => {
+      event.preventDefault()
+      if (!outgoing || !incoming) return
+      onSave({ ...team, xi: team.xi.map((id) => id === off ? on : id) })
+    }}>
+      <label className="field">Player out<select value={off} required onChange={(event) => { setOff(event.target.value); setOn('') }}>
+        <option value="">Select starter</option>
+        {starters.map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}
+      </select></label>
+      <label className="field">Player in<select value={on} required disabled={!outgoing} onChange={(event) => setOn(event.target.value)}>
+        <option value="">Select from ESPN squad</option>
+        {replacements.map((player) => <option key={player.id} value={player.id}>{player.name}{player.role ? ` · ${player.role}` : ''}</option>)}
+      </select></label>
+      <button type="submit" className="button primary match-submit" disabled={!incoming}>Swap player</button>
+    </form>
+  </Modal>
 }
 
 type Selection = 'xi' | 'bench' | ''

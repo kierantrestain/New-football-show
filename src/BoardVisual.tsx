@@ -162,14 +162,14 @@ function layoutLabels(players: BoardPlayer[], frame: Bounds): Label[] {
 function Player({ player, selected, clean, uid, label }: { player: BoardPlayer; selected: boolean; clean: boolean; uid: string; label?: Label }) {
   const { point, name, colour, number } = player;
   return (
-    <g transform={`translate(${point.x} ${point.y})`} data-player={clean ? undefined : player.id} role="img" aria-label={`${number}, ${name}`}>
+    <g transform={`translate(${point.x} ${point.y})`} data-player={clean ? undefined : player.id} role="img" aria-label={number === null ? name : `${number}, ${name}`}>
       {!clean && !label && <title>{name}</title>}
       {!clean && <circle r="23" fill="transparent" />}
       {selected && !clean && <circle r="22" fill="none" stroke="#d6fc86" strokeWidth="2" />}
       <ellipse cy="3" rx="19" ry="17.5" fill="#081b15" opacity=".5" />
       <circle r={MARKER_RADIUS} fill={colour} stroke="#f9fff5" strokeWidth="1.65" />
       <circle r="16" fill={`url(#${uid}-token)`} />
-      <text y="6" fill={numberInk(colour)} fontFamily={FONT} fontSize="17.2" fontWeight="800" textAnchor="middle">{number}</text>
+      <text y="6" fill={numberInk(colour)} fontFamily={FONT} fontSize="17.2" fontWeight="800" textAnchor="middle">{number ?? '–'}</text>
       {label && (
         <g transform={`translate(${label.x - point.x} ${label.y - point.y})`}>
           <rect width={label.width} height={label.height} rx="4" fill="#0c1b17" fillOpacity=".95" stroke="#ffffff" strokeOpacity=".16" strokeWidth=".65" />

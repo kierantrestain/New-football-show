@@ -13,6 +13,7 @@ export type Player = {
   name: string
   number: number | null
   role?: Role
+  teamId?: string
 }
 
 export type Team = {
@@ -23,6 +24,7 @@ export type Team = {
   xi: string[]
   bench: string[]
   verification: Verification
+  selection?: 'provisional' | 'reconstruction'
   benchVerification?: Verification
   source?: string
   formation?: Formation
@@ -166,6 +168,7 @@ function verification(input: unknown, populated: boolean): Verification {
 function parseTeam(input: unknown, side: Side): Team {
   const raw = object(input, side === 'home' ? 'Home team' : 'Away team')
   const name = value(raw.name, 'Club name', 70)
+  const teamId = value(raw.id, 'Club ID')
   const squad = list(raw.squad ?? [], `${name} squad`, 150).map((entry): Player => {
     const player = object(entry, 'Player')
     const role = player.role
@@ -177,6 +180,7 @@ function parseTeam(input: unknown, side: Side): Team {
       name: value(player.name, 'Player name', 70),
       number: player.number == null ? null : integer(player.number, 'Shirt number', 1, 99),
       role,
+      ...(player.teamId === teamId ? { teamId } : {}),
     }
   })
   const xi = list(raw.xi ?? [], `${name} XI`, 11).map((id) => value(id, 'Starter ID'))
@@ -185,9 +189,11 @@ function parseTeam(input: unknown, side: Side): Team {
   if (new Set(squad.map((player) => player.id)).size !== squad.length) throw new Error(`${name} has duplicate player IDs.`)
   const selection = [...xi, ...bench]
   if (new Set(selection).size !== selection.length) throw new Error(`${name} lists a player more than once on matchday.`)
-  const shirts = selection.map((id) => squad.find((player) => player.id === id)?.number)
-  if (shirts.some((number) => number == null)) throw new Error(`${name} matchday players need a squad entry and shirt number.`)
-  if (new Set(shirts).size !== shirts.length) throw new Error(`${name} matchday shirt numbers must be unique.`)
+  const selected = selection.map((id) => squad.find((player) => player.id === id))
+  if (selected.some((player) => !player)) throw new Error(`${name} matchday players need a squad entry.`)
+  const tactical = raw.selection === 'provisional' || raw.selection === 'reconstruction' ? raw.selection : undefined
+  const shirts = selected.flatMap((player) => player?.number ?? [])
+  if (!tactical && new Set(shirts).size !== shirts.length) throw new Error(`${name} matchday shirt numbers must be unique.`)
 
   const xiStatus = verification(raw.verification, xi.length > 0)
   const benchStatus = verification(raw.benchVerification, bench.length > 0)
@@ -202,8 +208,8 @@ function parseTeam(input: unknown, side: Side): Team {
   const keeper = xi.findIndex((id) => squad.find((player) => player.id === id)?.role === 'GK')
   if (keeper > 0) xi.unshift(...xi.splice(keeper, 1))
   return {
-    id: value(raw.id, 'Club ID'), name, colour, squad, xi, bench, verification: xiStatus,
-    benchVerification: benchStatus, formation,
+    id: teamId, name, colour, squad, xi, bench, verification: xiStatus,
+    benchVerification: benchStatus, formation, ...(xiStatus === 'manual' && tactical ? { selection: tactical } : {}),
     source: verified ? url(raw.source, `${name} matchday source`) : raw.source === undefined ? undefined : value(raw.source, 'Matchday source', 2048),
   }
 }
@@ -256,4 +262,23 @@ export function parseMatch(input: unknown): Match {
     week: raw.week === undefined ? undefined : integer(raw.week, 'Matchweek', 1, 38),
     officialUrl: raw.officialUrl === undefined ? undefined : url(raw.officialUrl, 'Match centre'),
   }
+}
+
+const londonParts = new Intl.DateTimeFormat('en-GB', {
+  year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  hourCycle: 'h23', timeZone: 'Europe/London',
+})
+
+export function londonInput(time: number): string {
+  const parts = Object.fromEntries(londonParts.formatToParts(time).map(({ type, value }) => [type, value]))
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`
+}
+
+export function londonKickoff(value: string): string | null {
+  if (!value) return null
+  const target = Date.parse(value + 'Z')
+  if (!Number.isFinite(target)) throw new Error('Enter a valid London kick-off time.')
+  const utc = [target, target - 3600000].find((time) => londonInput(time) === value)
+  if (utc === undefined) throw new Error('Enter a valid London kick-off time.')
+  return new Date(utc).toISOString()
 }
