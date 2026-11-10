@@ -79,3 +79,36 @@ test('a flat zone remains visible and editable', () => {
   const markup = renderToStaticMarkup(createElement(BoardVisual, { scene: active }))
   assert.match(markup, /<rect x="60" y="97" width="120" height="6"/)
 })
+
+test('distance labels use pitch metres, still image pixels, and clean output', () => {
+  const mark = { id: 'distance', kind: 'distance' as const, colour: '#f8dc63', style: 'solid' as const, points: [{ x: 100, y: 200 }, { x: 400, y: 200 }] }
+  const measured: Scene = { ...scene, marks: [mark] }
+  const pitch = renderToStaticMarkup(createElement(BoardVisual, { scene: measured, clean: true }))
+  assert.match(pitch, /30\.0 m/)
+  const still = renderToStaticMarkup(createElement(BoardVisual, { scene: { ...measured, image: { src: 'data:', width: 2100, height: 1360, fit: 'fit' } }, clean: true }))
+  assert.match(still, /600 px/)
+})
+
+test('team shapes are opt-in, follow the pitch, and motion targets never appear on air', () => {
+  const makePlayer = (id: string, x: number, y: number, role: 'GK' | 'DEF' | 'MID' | 'FWD') => ({
+    id, slotId: id, name: id, number: 4, role, teamId: 'home', colour: '#ff5050', point: { x, y },
+  })
+  const pitch: Scene = {
+    ...scene, marks: [], shapeTeams: 'home',
+    motionTargets: { a: { x: 380, y: 380 } },
+    players: [
+      makePlayer('g', 60, 340, 'GK'), makePlayer('a', 180, 100, 'DEF'),
+      makePlayer('b', 180, 550, 'DEF'), makePlayer('c', 360, 320, 'MID'),
+      makePlayer('d', 470, 330, 'FWD'),
+    ],
+  }
+  const editor = renderToStaticMarkup(createElement(BoardVisual, { scene: pitch, showMotionTargets: true }))
+  assert.match(editor, /HOME SHAPE/)
+  assert.match(editor, /Width 45\.0m/)
+  assert.match(editor, /stroke-dasharray="4 5"/)
+  const onAir = renderToStaticMarkup(createElement(BoardVisual, { scene: pitch, clean: true }))
+  assert.match(onAir, /HOME SHAPE/)
+  assert.doesNotMatch(onAir, /stroke-dasharray="4 5"/)
+  const hidden = renderToStaticMarkup(createElement(BoardVisual, { scene: { ...pitch, shapeTeams: 'off' }, clean: true }))
+  assert.doesNotMatch(hidden, /HOME SHAPE/)
+})
