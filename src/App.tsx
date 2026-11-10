@@ -135,6 +135,7 @@ export function App() {
   const airPointer = useRef<{ x: number; y: number } | null>(null)
   const fullscreenStarted = useRef(false)
   const lastTap = useRef(0)
+  const airTapTimer = useRef<number | undefined>(undefined)
   const dirty = board !== saved && (saved !== undefined || history.past.length > 0 || board.updatedAt > 0)
   const selectedMark = scene.marks.find((mark) => mark.id === selection.annotation)
   const activeTool = tools.find((item) => item.id === tool)!
@@ -410,6 +411,9 @@ export function App() {
   }
 
   function stopAir() {
+    if (airTapTimer.current !== undefined) window.clearTimeout(airTapTimer.current)
+    airTapTimer.current = undefined
+    lastTap.current = 0
     setOnAir(false)
     if (document.fullscreenElement === frame.current) void document.exitFullscreen().catch(() => {})
   }
@@ -471,8 +475,16 @@ export function App() {
             }
             if (Math.hypot(dx, dy) > 14) return
             const now = Date.now()
-            if (now - lastTap.current < 400) stopAir()
+            if (now - lastTap.current < 400) {
+              stopAir()
+              return
+            }
             lastTap.current = now
+            // Single tap plays/pauses; double tap exits without on-air controls.
+            if (canPlay) airTapTimer.current = window.setTimeout(() => {
+              airTapTimer.current = undefined
+              togglePlayback()
+            }, 410)
           }}>
           <BoardVisual scene={playbackScene} clean />
         </div>
