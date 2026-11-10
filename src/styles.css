@@ -437,3 +437,13 @@ h1, h2, h3, p { margin: 0; }
 @media (pointer: coarse) {
   .team-actions .button, .team-empty .button, .team-tabs button, .squad-row select, .squad-row input { min-height: 42px; }
 }
+
+.board-transfer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 13px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.stage-actions .icon-button[aria-pressed=true] { color: var(--accent); }

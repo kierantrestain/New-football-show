@@ -26,6 +26,7 @@ export type Scene = Layer & {
   id: string
   name: string
   image?: Still
+  showPlayerNames?: boolean
   pitchLayer?: Layer
   players: BoardPlayer[]
   ball: Ball | null

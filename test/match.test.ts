@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { activeLineup, mergeMatchEvents } from '../src/match'
-import type { Substitution, Team } from '../src/match'
+import { activeLineup, fixtureMatch, mergeMatchEvents } from '../src/match'
+import type { Match, Substitution, Team } from '../src/match'
 
 const verified: Substitution = { teamId: 'home', off: 'a', on: 'b', minute: 68, verification: 'verified' }
 const sameOutgoing: Substitution = { teamId: 'home', off: 'a', on: 'c', minute: 50, verification: 'manual' }
@@ -31,4 +31,28 @@ test('changes recorded in the same minute retain source order', () => {
   const incoming: Substitution = { ...verified, verification: 'manual' }
   const outgoing: Substitution = { ...chain, verification: 'verified', minute: 68 }
   assert.deepEqual(mergeMatchEvents([incoming, outgoing], []), [incoming, outgoing])
+})
+
+test('refreshing a fixture replaces feed details and preserves sourced matchday records', () => {
+  const home: Team = {
+    id: 'home', name: 'Home', colour: '#ffffff', squad: [], xi: [], bench: [],
+    verification: 'verified', benchVerification: 'verified', source: 'https://example.com/lineup',
+  }
+  const away: Team = { ...home, id: 'away', name: 'Away' }
+  const existing: Match = {
+    id: 'fixture', source: 'Operator entry', kickoff: '2026-08-21T18:00:00Z', score: null,
+    status: 'scheduled', home, away, substitutions: [verified], officialUrl: 'https://example.com/fixture',
+  }
+  const latest = fixtureMatch({
+    id: existing.id, homeId: home.id, awayId: away.id,
+    kickoff: '2026-08-21T19:00:00Z', score: [3, 0], status: 'finished', week: 1,
+  }, { source: 'Fixture feed', clubs: [], fixtures: [] }, existing)
+  assert.equal(latest.id, existing.id)
+  assert.equal(latest.kickoff, '2026-08-21T19:00:00Z')
+  assert.deepEqual(latest.score, [3, 0])
+  assert.equal(latest.source, 'Fixture feed')
+  assert.equal(latest.home, home)
+  assert.equal(latest.away, away)
+  assert.equal(latest.substitutions, existing.substitutions)
+  assert.equal(latest.officialUrl, existing.officialUrl)
 })

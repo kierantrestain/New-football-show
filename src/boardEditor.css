@@ -27,4 +27,13 @@
 
 .board-editor--erase [data-annotation] { cursor: cell; }
 
-.board-editor:focus-visible { outline: 2px solid var(--accent, #b7f568); outline-offset: 2px; }
+.board-editor:focus-visible { outline: 2px solid var(--accent, #b7f568); outline-offset: -3px; }
+
+.stage-surface .board-editor-a11y {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

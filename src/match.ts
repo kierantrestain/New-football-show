@@ -69,16 +69,20 @@ export type FixtureCatalog = {
 
 export const TEAM_COLOURS = { home: '#e85a64', away: '#52a9ed' }
 
-export function fixtureMatch(fixture: Fixture, catalog: FixtureCatalog): Match {
+export function fixtureMatch(fixture: Fixture, catalog: FixtureCatalog, current?: Match | null): Match {
+  const metadata = {
+    id: fixture.id, source: catalog.source, kickoff: fixture.kickoff, score: fixture.score,
+    status: fixture.status, week: fixture.week,
+  }
+  if (current?.id === fixture.id) return { ...current, ...metadata }
+
   const team = (id: string, side: Side): Team => {
     const club = catalog.clubs.find((candidate) => candidate.id === id)
     if (!club) throw new Error('This fixture is missing a club record.')
     return { ...club, colour: TEAM_COLOURS[side], xi: [], bench: [], verification: 'unavailable' }
   }
   return {
-    id: fixture.id, source: catalog.source, kickoff: fixture.kickoff, score: fixture.score,
-    status: fixture.status, week: fixture.week,
-    home: team(fixture.homeId, 'home'), away: team(fixture.awayId, 'away'), substitutions: [],
+    ...metadata, home: team(fixture.homeId, 'home'), away: team(fixture.awayId, 'away'), substitutions: [],
   }
 }
 

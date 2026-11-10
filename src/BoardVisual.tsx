@@ -159,21 +159,24 @@ function layoutLabels(players: BoardPlayer[], frame: Bounds): Label[] {
   });
 }
 
-function Player({ player, selected, clean, uid, label }: { player: BoardPlayer; selected: boolean; clean: boolean; uid: string; label: Label }) {
+function Player({ player, selected, clean, uid, label }: { player: BoardPlayer; selected: boolean; clean: boolean; uid: string; label?: Label }) {
   const { point, name, colour, number } = player;
-  const labelX = label.x - point.x;
-  const labelY = label.y - point.y;
   return (
     <g transform={`translate(${point.x} ${point.y})`} data-player={clean ? undefined : player.id} role="img" aria-label={`${number}, ${name}`}>
+      {!clean && !label && <title>{name}</title>}
       {!clean && <circle r="23" fill="transparent" />}
       {selected && !clean && <circle r="22" fill="none" stroke="#d6fc86" strokeWidth="2" />}
       <ellipse cy="3" rx="19" ry="17.5" fill="#081b15" opacity=".5" />
       <circle r={MARKER_RADIUS} fill={colour} stroke="#f9fff5" strokeWidth="1.65" />
       <circle r="16" fill={`url(#${uid}-token)`} />
       <text y="6" fill={numberInk(colour)} fontFamily={FONT} fontSize="17.2" fontWeight="800" textAnchor="middle">{number}</text>
-      <rect x={labelX} y={labelY} width={label.width} height={label.height} rx="4" fill="#0c1b17" fillOpacity=".95" stroke="#ffffff" strokeOpacity=".16" strokeWidth=".65" />
-      <text x={labelX + label.width / 2} y={labelY + 15} textAnchor="middle" fill="#fcfff8" fontFamily={FONT} fontSize="14.2" fontWeight="700"
-        textLength={label.compress ? label.width - 12 : undefined} lengthAdjust="spacingAndGlyphs">{name}</text>
+      {label && (
+        <g transform={`translate(${label.x - point.x} ${label.y - point.y})`}>
+          <rect width={label.width} height={label.height} rx="4" fill="#0c1b17" fillOpacity=".95" stroke="#ffffff" strokeOpacity=".16" strokeWidth=".65" />
+          <text x={label.width / 2} y="15" textAnchor="middle" fill="#fcfff8" fontFamily={FONT} fontSize="14.2" fontWeight="700"
+            textLength={label.compress ? label.width - 12 : undefined} lengthAdjust="spacingAndGlyphs">{name}</text>
+        </g>
+      )}
     </g>
   );
 }
@@ -244,10 +247,11 @@ const Annotation = memo(function Annotation({ mark, clean, uid, unit }: { mark: 
   const arrow = arrowKinds.has(kind);
   const dash = style === 'dash' ? `${11 * unit} ${8 * unit}` : style === 'dot' ? `1 ${7 * unit}` : undefined;
   const lineCap = arrow && style !== 'dot' ? 'butt' : 'round';
-  const x = Math.min(start.x, end.x);
-  const y = Math.min(start.y, end.y);
-  const width = Math.abs(start.x - end.x);
-  const height = Math.abs(start.y - end.y);
+  // Flat drags still leave a visible, selectable strip for zones and spotlights.
+  const width = Math.max(6 * unit, Math.abs(start.x - end.x));
+  const height = Math.max(6 * unit, Math.abs(start.y - end.y));
+  const x = (start.x + end.x - width) / 2;
+  const y = (start.y + end.y - height) / 2;
   const path = kind === 'carry'
     ? carryPath(start, end, control)
     : kind === 'freehand'
@@ -331,7 +335,7 @@ export function BoardVisual({ scene, selection, marquee, clean = false, style, .
   const players = scene.image ? [] : scene.players.filter(({ point }) => !clip || (
     point.x >= clip.x && point.x <= clip.x + clip.width && point.y >= clip.y && point.y <= clip.y + clip.height
   ));
-  const labels = layoutLabels(players, clip ?? FULL);
+  const labels = scene.showPlayerNames === false ? [] : layoutLabels(players, clip ?? FULL);
   const marks = scene.showAnnotations ? scene.marks : [];
   const activeMark = clean ? undefined : marks.find(mark => mark.id === selection?.annotation);
   const unit = Math.max(1, view.width / FULL.width);

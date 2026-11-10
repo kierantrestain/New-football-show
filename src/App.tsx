@@ -2,12 +2,13 @@ import { useEffect, useReducer, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import {
   ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, ChevronDown, CircleDot, Copy,
-  Eraser, Eye, EyeOff, FolderOpen, ImagePlus, Layers2, Maximize, MousePointer2, PanelRight,
-  Pencil, Plus, Radio, Redo2, Route, Save, Scan, Send, Square, Trash2, Undo2, UsersRound, X,
+  Eraser, Eye, EyeOff, FileUp, FolderOpen, ImagePlus, Layers2, Maximize, MousePointer2, PanelRight,
+  Pencil, Plus, Radio, Redo2, Route, Save, Scan, Send, Square, Tags, Trash2, Undo2, UsersRound, X,
 } from 'lucide-react'
 import { BoardEditor, restyleMark } from './BoardEditor'
 import type { BoardOptions, BoardSelection, BoardTool } from './BoardEditor'
 import { BoardVisual } from './BoardVisual'
+import { downloadBoardFile, readBoardFile } from './boardFile'
 import { MatchPanel, MatchSelector } from './MatchPanel'
 import { Modal } from './Modal'
 import { mergeMatchEvents } from './match'
@@ -18,15 +19,15 @@ import type { Board, Scene, View } from './model'
 import { deleteBoard, lastBoardId, listBoards, openBoard, readStill, rememberBoard, saveBoard } from './storage'
 
 const tools = [
-  { id: 'select', label: 'Select', icon: MousePointer2, hint: 'Drag to move · Shift to select multiple players' },
-  { id: 'run', label: 'Run', icon: ArrowUpRight, hint: 'Drag from the start to the end of the run' },
-  { id: 'pass', label: 'Pass', icon: Send, hint: 'Drag between players or open spaces' },
-  { id: 'carry', label: 'Carry', icon: Route, hint: 'Drag to show movement with the ball' },
-  { id: 'draw', label: 'Draw', icon: Pencil, hint: 'Draw directly on the board' },
-  { id: 'shape', label: 'Shape', icon: Square, hint: 'Drag to draw a zone or defensive line' },
-  { id: 'highlight', label: 'Highlight', icon: Scan, hint: 'Tap to spotlight, or drag to resize' },
-  { id: 'erase', label: 'Erase', icon: Eraser, hint: 'Tap a mark to erase it' },
-  { id: 'ball', label: 'Ball', icon: CircleDot, hint: 'Tap a player to attach · Drag the ball to move it' },
+  { id: 'select', key: 'v', label: 'Select', icon: MousePointer2, hint: 'Drag to move · Shift to select multiple players' },
+  { id: 'run', key: 'r', label: 'Run', icon: ArrowUpRight, hint: 'Drag from the start to the end of the run' },
+  { id: 'pass', key: 'p', label: 'Pass', icon: Send, hint: 'Drag between players or open spaces' },
+  { id: 'carry', key: 'c', label: 'Carry', icon: Route, hint: 'Drag to show movement with the ball' },
+  { id: 'draw', key: 'd', label: 'Draw', icon: Pencil, hint: 'Draw directly on the board' },
+  { id: 'shape', key: 's', label: 'Shape', icon: Square, hint: 'Drag to draw a zone or defensive line' },
+  { id: 'highlight', key: 'h', label: 'Highlight', icon: Scan, hint: 'Tap to spotlight, or drag to resize' },
+  { id: 'erase', key: 'e', label: 'Erase', icon: Eraser, hint: 'Tap a mark to erase it' },
+  { id: 'ball', key: 'b', label: 'Ball', icon: CircleDot, hint: 'Tap a player to attach · Drag the ball to move it' },
 ] as const
 
 const views: { id: View; label: string }[] = [
@@ -114,6 +115,8 @@ export function App() {
   const [ready, setReady] = useState(false)
   const [notice, setNotice] = useState('')
   const [library, setLibrary] = useState<Awaited<ReturnType<typeof listBoards>> | null>(null)
+  const [transferring, setTransferring] = useState(false)
+  const [transferError, setTransferError] = useState('')
   const [rename, setRename] = useState<'board' | 'scene' | null>(null)
   const [teamPanel, setTeamPanel] = useState(() => window.matchMedia('(min-width: 1100px)').matches)
   const [tool, setTool] = useState<BoardTool>('select')
@@ -126,6 +129,8 @@ export function App() {
   const [saving, setSaving] = useState(false)
   const frame = useRef<HTMLDivElement>(null)
   const imageInput = useRef<HTMLInputElement>(null)
+  const boardInput = useRef<HTMLInputElement>(null)
+  const airPointer = useRef<{ x: number; y: number } | null>(null)
   const fullscreenStarted = useRef(false)
   const lastTap = useRef(0)
   const dirty = board !== saved && (saved !== undefined || history.past.length > 0 || board.updatedAt > 0)
@@ -207,6 +212,17 @@ export function App() {
     })
   }
 
+  function moveScene(direction: -1 | 1) {
+    edit((current) => {
+      const index = current.scenes.findIndex((item) => item.id === scene.id)
+      const target = index + direction
+      if (target < 0 || target >= current.scenes.length) return current
+      const scenes = [...current.scenes]
+      scenes.splice(target, 0, scenes.splice(index, 1)[0])
+      return { ...current, scenes }
+    })
+  }
+
   function removeScene() {
     edit((current) => {
       if (current.scenes.length <= 1) return current
@@ -250,6 +266,7 @@ export function App() {
   }
 
   async function showLibrary() {
+    setTransferError('')
     try { setLibrary(await listBoards()) }
     catch { setNotice('Could not open the board library.') }
   }
@@ -270,6 +287,30 @@ export function App() {
       if (!next) throw new Error('Board unavailable')
       loadBoard(next)
     } catch { setNotice('Could not open this board.') }
+  }
+
+  async function importBoard(file?: File) {
+    if (!file || transferring) return
+    if (dirty && !window.confirm('Import a board and discard unsaved changes?')) return
+    setTransferring(true)
+    setTransferError('')
+    try {
+      const next = await readBoardFile(file)
+      await saveBoard(next)
+      loadBoard(next)
+      setNotice('Board imported and saved on this device.')
+    } catch (error) {
+      setTransferError(error instanceof Error ? error.message : 'Could not import the board.')
+    } finally { setTransferring(false) }
+  }
+
+  function downloadBoard() {
+    try {
+      downloadBoardFile(board)
+      setTransferError('')
+    } catch (error) {
+      setTransferError(error instanceof Error ? error.message : 'Could not download the board.')
+    }
   }
 
   async function duplicateBoard() {
@@ -319,6 +360,7 @@ export function App() {
 
   function startAir() {
     lastTap.current = 0
+    airPointer.current = null
     setOnAir(true)
     frame.current?.requestFullscreen?.().catch(() => { /* Use the viewport when fullscreen is unavailable. */ })
   }
@@ -335,6 +377,10 @@ export function App() {
         if (event.key === 'Escape') stopAir()
         if (event.key === 'ArrowLeft') navigate(sceneIndex - 1)
         if (event.key === 'ArrowRight') navigate(sceneIndex + 1)
+        if (event.key === ' ' && !event.repeat) {
+          event.preventDefault()
+          editScene((item) => ({ ...item, showAnnotations: !item.showAnnotations }))
+        }
         return
       }
       if (!ready || document.querySelector('dialog[open]')) return
@@ -345,6 +391,13 @@ export function App() {
       if (modifier && (key === 'z' || key === 'y')) {
         event.preventDefault()
         dispatch({ type: key === 'y' || event.shiftKey ? 'redo' : 'undo' })
+        return
+      }
+      if (modifier || event.altKey || event.repeat) return
+      const shortcut = tools.find((item) => item.key === key)
+      if (shortcut && (shortcut.id !== 'ball' || !scene.image)) {
+        event.preventDefault()
+        chooseTool(shortcut.id)
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -354,11 +407,27 @@ export function App() {
   return (
     <div ref={frame} className={onAir ? 'air-frame' : 'app-frame'}>
       {onAir ? (
-        <div className="on-air-stage" aria-label="On-air presentation" onPointerUp={() => {
-          const now = Date.now()
-          if (now - lastTap.current < 400) stopAir()
-          lastTap.current = now
-        }}>
+        <div className="on-air-stage" aria-label="On-air presentation"
+          onPointerDown={(event) => {
+            if (event.isPrimary) airPointer.current = { x: event.clientX, y: event.clientY }
+          }}
+          onPointerCancel={() => { airPointer.current = null }}
+          onPointerUp={(event) => {
+            const start = airPointer.current
+            airPointer.current = null
+            if (!start || !event.isPrimary) return
+            const dx = event.clientX - start.x
+            const dy = event.clientY - start.y
+            if (event.pointerType === 'touch' && Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+              lastTap.current = 0
+              navigate(sceneIndex + (dx < 0 ? 1 : -1))
+              return
+            }
+            if (Math.hypot(dx, dy) > 14) return
+            const now = Date.now()
+            if (now - lastTap.current < 400) stopAir()
+            lastTap.current = now
+          }}>
           <BoardVisual scene={scene} clean />
         </div>
       ) : (
@@ -395,8 +464,8 @@ export function App() {
           <main className={teamPanel ? 'workspace panel-open' : 'workspace'} inert={!ready}>
             <aside className="tool-rail" aria-label="Tactical tools">
               <div className="rail-tools">
-                {tools.map(({ id, label, icon: ToolIcon }) => (
-                  <button key={id} className="tool-button" type="button" aria-pressed={tool === id} aria-label={label} title={label}
+                {tools.map(({ id, key, label, icon: ToolIcon }) => (
+                  <button key={id} className="tool-button" type="button" aria-pressed={tool === id} aria-label={label} title={`${label} (${key.toUpperCase()})`} aria-keyshortcuts={key.toUpperCase()}
                     disabled={id === 'ball' && !!scene.image} onClick={() => chooseTool(id)}>
                     <ToolIcon size={20} strokeWidth={1.85} /><span>{label}</span>
                   </button>
@@ -439,6 +508,11 @@ export function App() {
                   <IconButton label={scene.showAnnotations ? 'Hide annotations' : 'Show annotations'} onClick={() => editScene((item) => ({
                     ...item, showAnnotations: !item.showAnnotations,
                   }))}>{scene.showAnnotations ? <Eye size={17} /> : <EyeOff size={17} />}</IconButton>
+                  {!scene.image && scene.players.length > 0 && (
+                    <button className="icon-button" type="button" aria-label="Player names" aria-pressed={scene.showPlayerNames !== false}
+                      title={scene.showPlayerNames === false ? 'Show player names' : 'Hide player names'}
+                      onClick={() => editScene((item) => ({ ...item, showPlayerNames: item.showPlayerNames === false }))}><Tags size={16} /></button>
+                  )}
                   <button className="button subtle compact team-toggle" type="button" aria-pressed={teamPanel} aria-label="Teams panel"
                     title={teamPanel ? 'Hide teams' : 'Show teams'} onClick={() => setTeamPanel(!teamPanel)}><PanelRight size={17} /><span>Teams</span></button>
                 </div>
@@ -508,6 +582,8 @@ export function App() {
                 <button className="button subtle compact" type="button" onClick={() => createScene(false)} title="Add Scene" aria-label="Add Scene"><Plus size={17} /><span>Add scene</span></button>
                 <IconButton label="Duplicate Scene" onClick={() => createScene(true)}><Copy size={17} /></IconButton>
                 <IconButton label="Rename Scene" onClick={() => setRename('scene')}><Pencil size={16} /></IconButton>
+                <IconButton label="Move scene earlier" disabled={sceneIndex === 0} onClick={() => moveScene(-1)}><ArrowLeft size={15} /></IconButton>
+                <IconButton label="Move scene later" disabled={sceneIndex === board.scenes.length - 1} onClick={() => moveScene(1)}><ArrowRight size={15} /></IconButton>
                 <IconButton label="Delete Scene" disabled={board.scenes.length < 2} onClick={removeScene}><Trash2 size={17} /></IconButton>
               </div>
             </section>
@@ -515,19 +591,28 @@ export function App() {
 
           {notice && <div className="notice" role="status">{notice}</div>}
           {library && (
-            <Modal title="Open Board" onClose={() => setLibrary(null)}>
+            <Modal title="Open Board" onClose={() => { if (!transferring) setLibrary(null) }}>
               <div className="board-library stack">
                 {library.length === 0 && <p className="data-message">No saved boards on this device.</p>}
                 {library.map((item) => (
                   <div key={item.id} className="library-row">
-                    <button type="button" className="library-open" onClick={() => { void openSaved(item.id) }}><FolderOpen size={17} /><span>{item.name}<small>{item.sceneCount} {item.sceneCount === 1 ? 'scene' : 'scenes'} · {new Date(item.updatedAt).toLocaleDateString('en-GB')}</small></span></button>
-                    <IconButton label={`Delete ${item.name}`} onClick={() => { void removeSaved(item.id, item.name) }}><Trash2 size={17} /></IconButton>
+                    <button type="button" className="library-open" disabled={transferring} onClick={() => { void openSaved(item.id) }}><FolderOpen size={17} /><span>{item.name}<small>{item.sceneCount} {item.sceneCount === 1 ? 'scene' : 'scenes'} · {new Date(item.updatedAt).toLocaleDateString('en-GB')}</small></span></button>
+                    <IconButton label={`Delete ${item.name}`} disabled={transferring} onClick={() => { void removeSaved(item.id, item.name) }}><Trash2 size={17} /></IconButton>
                   </div>
                 ))}
               </div>
+              <div className="board-transfer">
+                <button className="button subtle" type="button" disabled={transferring} onClick={() => boardInput.current?.click()}><FileUp size={16} />{transferring ? 'Importing…' : 'Import board file'}</button>
+                <button className="button subtle" type="button" disabled={transferring} onClick={downloadBoard}><ArrowDownToLine size={16} /> Download board file</button>
+                <input ref={boardInput} type="file" accept=".touchline.json,.json,application/json" hidden onChange={(event) => {
+                  void importBoard(event.currentTarget.files?.[0])
+                  event.currentTarget.value = ''
+                }} />
+              </div>
+              {transferError && <p className="match-error" role="alert">{transferError}</p>}
               <div className="dialog-actions library-actions">
-                <button className="button subtle" type="button" onClick={() => { void duplicateBoard() }}><Copy size={16} /> Duplicate board</button>
-                <button className="button primary" type="button" onClick={() => {
+                <button className="button subtle" type="button" disabled={transferring} onClick={() => { void duplicateBoard() }}><Copy size={16} /> Duplicate board</button>
+                <button className="button primary" type="button" disabled={transferring} onClick={() => {
                   if (!dirty || window.confirm('Start a new board and discard unsaved changes?')) loadBoard(makeBoard())
                 }}><Plus size={16} /> New board</button>
               </div>

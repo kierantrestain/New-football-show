@@ -51,3 +51,31 @@ test('still fit and crop retain image-space marks and exclude editing handles fr
   assert.ok(output.includes(position))
   assert.doesNotMatch(output, /data-(annotation|handle)/)
 })
+
+test('nameplates default to visible and can be hidden without removing shirt numbers', () => {
+  const pitch = {
+    ...scene,
+    players: [{
+      id: 'player', name: 'Saka', number: 7, teamId: 'home', colour: '#dc3851',
+      point: { x: 370, y: 230 }, slotId: 'slot',
+    }],
+  }
+  const legacy = renderToStaticMarkup(createElement(BoardVisual, { scene: pitch, clean: true }))
+  assert.match(legacy, /<text[^>]*>Saka<\/text>/)
+  const hidden = { ...pitch, showPlayerNames: false }
+  const clean = renderToStaticMarkup(createElement(BoardVisual, { scene: hidden, clean: true }))
+  assert.doesNotMatch(clean, /<(text|title)[^>]*>Saka</)
+  assert.match(clean, /<text[^>]*>7<\/text>/)
+  const editor = renderToStaticMarkup(createElement(BoardVisual, { scene: hidden }))
+  assert.match(editor, /<title>Saka<\/title>/)
+  assert.match(editor, /aria-label="7, Saka"/)
+})
+
+test('a flat zone remains visible and editable', () => {
+  const active: Scene = {
+    ...scene,
+    marks: [{ ...scene.marks[0], kind: 'zone', points: [{ x: 60, y: 100 }, { x: 180, y: 100 }] }],
+  }
+  const markup = renderToStaticMarkup(createElement(BoardVisual, { scene: active }))
+  assert.match(markup, /<rect x="60" y="97" width="120" height="6"/)
+})

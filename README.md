@@ -18,7 +18,11 @@ Use the **Match state** selector to inspect a recorded minute or enter a custom 
 
 - Home attacks to the right. Away attacks to the left. The attacking and defensive views follow the home orientation.
 - Use **Group** or Shift to select several players. Drag to reposition them and use the arrow keys for small adjustments. With **Ball**, tap a player to attach it or drag the ball to place it independently.
-- Select a mark to edit its style, endpoints or curve. Use **Duplicate Scene** to preserve a setup while building the next moment.
+- Select a mark to edit its style, endpoints or curve. Use **Duplicate Scene** to preserve a setup while building the next moment. The scene action arrows move the active scene earlier or later.
 - Use **Import image** to work on a still. **Fit** and **Crop** preserve its aspect ratio and annotation coordinates. Returning to the pitch restores its original annotations.
-- **Save** stores the complete board on this device in IndexedDB. **Open** shows the local library. Use the name above the pitch to rename the board, then save the change.
-- **ON AIR** uses a clean 16:9 composition. The left and right arrow keys change scenes. Press Escape or double-tap to exit. **Export** downloads the same composition as a 1080p or 4K PNG.
+- **Save** stores the complete board on this device in IndexedDB. **Open** shows the local library. Use the name above the pitch to rename the board, then save the change. **Download board file** in the library bundles the editable board and any stills. On the next device, use **Import board file** to save a separate copy.
+- **ON AIR** uses a clean 16:9 composition. Use the left and right arrow keys or swipe on a tablet to change scenes. Space toggles the current scene’s annotations. Press Escape or double-tap to exit. **Export** downloads the same composition as a 1080p or 4K PNG.
+
+### Keyboard controls
+
+Tool shortcuts are **V** Select, **R** Run, **P** Pass, **C** Carry, **D** Draw, **S** Shape, **H** Highlight, **E** Erase and **B** Ball. Tab to the board in Select mode. Enter or Shift+Enter cycles visible objects, arrow keys nudge, and Shift+arrows move farther. Space attaches or detaches the ball on a selected player. Delete removes a selected mark or ball. Escape clears selection.

@@ -34,6 +34,7 @@ export function MatchSelector({ match, onChange }: SelectorProps) {
 
 function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: () => void }) {
   const [mode, setMode] = useState<'fixtures' | 'manual' | 'json'>('fixtures')
+  const [newFixture, setNewFixture] = useState(false)
   const [catalog, setCatalog] = useState<FixtureCatalog>()
   const [feed, setFeed] = useState('Loading Premier League fixtures…')
   const [query, setQuery] = useState('')
@@ -54,10 +55,21 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
   }, [])
 
   const clubs = new Map(catalog?.clubs.map((club) => [club.id, club.name]))
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  const rank = (fixture: FixtureCatalog['fixtures'][number]) => {
+    if (fixture.id === match?.id) return 0
+    if (fixture.status === 'live') return 1
+    if (!fixture.kickoff) return 4
+    return fixture.status === 'scheduled' ? 2 : 3
+  }
   const filtered = catalog?.fixtures.filter((fixture) => {
     const text = [clubs.get(fixture.homeId), clubs.get(fixture.awayId), dateLabel(fixture.kickoff), 'MW ' + fixture.week].join(' ').toLowerCase()
-    return query.trim().toLowerCase().split(/\s+/).every((word) => text.includes(word))
-  }).sort((a, b) => (a.kickoff ?? 'z').localeCompare(b.kickoff ?? 'z')) ?? []
+    return words.every((word) => text.includes(word))
+  }).sort((a, b) => {
+    const byDate = (a.kickoff ?? 'z').localeCompare(b.kickoff ?? 'z')
+    if (words.length) return byDate
+    return rank(a) - rank(b) || (rank(a) === 3 ? -byDate : byDate)
+  }) ?? []
   const switchMode = (next: typeof mode) => { setError(''); setMode(next) }
 
   const loadJson = async (file: File | undefined) => {
@@ -77,7 +89,7 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
   return <Modal title="Premier League match" onClose={onClose}>
     <div className="match-tabs" aria-label="Match data method">
       <button type="button" aria-pressed={mode === 'fixtures'} onClick={() => switchMode('fixtures')}>Fixtures</button>
-      <button type="button" aria-pressed={mode === 'manual'} onClick={() => switchMode('manual')}>Enter match</button>
+      <button type="button" aria-pressed={mode === 'manual'} onClick={() => { setNewFixture(false); switchMode('manual') }}>{match ? 'Edit fixture' : 'Enter match'}</button>
       <button type="button" aria-pressed={mode === 'json'} onClick={() => switchMode('json')}>Import JSON</button>
     </div>
     {mode === 'fixtures' && <>
@@ -85,17 +97,22 @@ function MatchDialog({ match, onChange, onClose }: SelectorProps & { onClose: ()
       {catalog && <>
         <label className="match-search"><Search size={16} /><input aria-label="Search fixtures" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
         <div className="fixture-list" aria-label="Premier League fixtures">
-          {filtered.map((fixture) => <button type="button" className="fixture-row" key={fixture.id}
-            onClick={() => onChange(match?.id === fixture.id ? match : fixtureMatch(fixture, catalog))}>
+          {filtered.map((fixture) => <button type="button" className="fixture-row" key={fixture.id} aria-current={match?.id === fixture.id || undefined}
+            onClick={() => onChange(fixtureMatch(fixture, catalog, match))}>
             <span>{clubs.get(fixture.homeId)} <strong>{fixture.score?.join('–') ?? 'v'}</strong> {clubs.get(fixture.awayId)}</span>
-            <span>{fixture.week ? `MW ${fixture.week} · ` : ''}{dateLabel(fixture.kickoff)}{fixture.status === 'live' ? ' · In progress' : ''}</span>
+            <span>{fixture.week ? `MW ${fixture.week} · ` : ''}{dateLabel(fixture.kickoff)}{fixture.status === 'live' ? ' · In progress' : ''}{match?.id === fixture.id ? ' · Refresh fixture' : ''}</span>
           </button>)}
           {!filtered.length && <p className="match-note">No matching fixtures.</p>}
         </div>
         <p className="match-note">{catalog.source}. Matchday lineups must be supplied separately.</p>
       </>}
     </>}
-    {mode === 'manual' && <ManualFixture onChange={onChange} />}
+    {mode === 'manual' && <>
+      {match && <button type="button" className="button subtle" onClick={() => setNewFixture(!newFixture)}>
+        {newFixture ? 'Edit selected fixture' : 'Enter another match'}
+      </button>}
+      <ManualFixture key={newFixture ? 'new' : match?.id} match={newFixture ? null : match} onChange={onChange} />
+    </>}
     {mode === 'json' && <form className="stack match-form" onSubmit={importJson}>
       <div className="match-actions">
         <label className="button subtle match-file"><FileUp size={15} /> Open JSON<input type="file" accept=".json,application/json" aria-label="Open match JSON" onChange={(event) => { void loadJson(event.currentTarget.files?.[0]); event.currentTarget.value = '' }} /></label>
@@ -118,20 +135,23 @@ const londonParts = new Intl.DateTimeFormat('en-GB', {
   hourCycle: 'h23', timeZone: 'Europe/London',
 })
 
+function londonInput(time: number): string {
+  const parts = Object.fromEntries(londonParts.formatToParts(time).map(({ type, value }) => [type, value]))
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`
+}
+
 function londonKickoff(value: string): string | null {
   if (!value) return null
   const target = Date.parse(value + 'Z')
   if (!Number.isFinite(target)) throw new Error('Enter a valid London kick-off time.')
-  const utc = [target, target - 3600000].find((time) => {
-    const parts = Object.fromEntries(londonParts.formatToParts(time).map(({ type, value }) => [type, value]))
-    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}` === value
-  })
+  const utc = [target, target - 3600000].find((time) => londonInput(time) === value)
   if (utc === undefined) throw new Error('Enter a valid London kick-off time.')
   return new Date(utc).toISOString()
 }
 
-function ManualFixture({ onChange }: { onChange: SelectorProps['onChange'] }) {
+function ManualFixture({ match, onChange }: SelectorProps) {
   const [error, setError] = useState('')
+  const currentKickoff = match?.kickoff ? londonInput(Date.parse(match.kickoff)) : ''
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
@@ -139,15 +159,30 @@ function ManualFixture({ onChange }: { onChange: SelectorProps['onChange'] }) {
     try {
       const goals = [field('homeGoals'), field('awayGoals')]
       if (Boolean(goals[0]) !== Boolean(goals[1])) throw new Error('Supply both scores or leave both blank.')
-      const kickoff = londonKickoff(field('kickoff'))
+      const kickoff = match && field('kickoff') === currentKickoff ? match.kickoff : londonKickoff(field('kickoff'))
       const officialUrl = field('source') || undefined
+      const score = goals[0] ? goals.map(Number) : null
+      if (match) {
+        const scoreChanged = score?.join() !== match.score?.join()
+        const edited = scoreChanged || kickoff !== match.kickoff || officialUrl !== match.officialUrl
+        const fixture = parseMatch({
+          ...match,
+          kickoff,
+          score,
+          officialUrl,
+          source: edited ? officialUrl || 'Operator entry' : match.source,
+          status: scoreChanged && score && match.status !== 'live' ? 'finished' : match.status,
+        })
+        onChange({ ...match, kickoff: fixture.kickoff, score: fixture.score, officialUrl: fixture.officialUrl, source: fixture.source, status: fixture.status })
+        return
+      }
       const home = field('home')
       const away = field('away')
       if (home.toLowerCase() === away.toLowerCase()) throw new Error('Choose two different clubs.')
       const clubId = (name: string) => 'manual:club:' + name.normalize('NFKC').toLowerCase().replace(/\s+/g, '-')
       onChange(parseMatch({
         id: editorId(), source: officialUrl || 'Operator entry', kickoff,
-        score: goals[0] ? goals.map(Number) : null,
+        score,
         officialUrl,
         home: { id: clubId(home), name: home },
         away: { id: clubId(away), name: away },
@@ -156,15 +191,15 @@ function ManualFixture({ onChange }: { onChange: SelectorProps['onChange'] }) {
   }
   return <form className="stack match-form" onSubmit={submit}>
     <div className="match-grid">
-      <label className="field">Home club<input name="home" required maxLength={70} /></label>
-      <label className="field">Away club<input name="away" required maxLength={70} /></label>
-      <label className="field">Home goals<input name="homeGoals" type="number" min="0" max="99" /></label>
-      <label className="field">Away goals<input name="awayGoals" type="number" min="0" max="99" /></label>
+      <label className="field">Home club<input name="home" defaultValue={match?.home.name} readOnly={Boolean(match)} required maxLength={70} /></label>
+      <label className="field">Away club<input name="away" defaultValue={match?.away.name} readOnly={Boolean(match)} required maxLength={70} /></label>
+      <label className="field">Home goals<input name="homeGoals" type="number" defaultValue={match?.score?.[0]} min="0" max="99" /></label>
+      <label className="field">Away goals<input name="awayGoals" type="number" defaultValue={match?.score?.[1]} min="0" max="99" /></label>
     </div>
-    <label className="field">Kick-off (UK time)<input type="datetime-local" name="kickoff" /></label>
-    <label className="field">Match centre URL<input type="url" name="source" /></label>
+    <label className="field">Kick-off (UK time)<input type="datetime-local" name="kickoff" defaultValue={currentKickoff} /></label>
+    <label className="field">Match centre URL<input type="url" name="source" defaultValue={match?.officialUrl} /></label>
     {error && <p className="match-error" role="alert">{error}</p>}
-    <button type="submit" className="button primary match-submit">Set match</button>
+    <button type="submit" className="button primary match-submit">{match ? 'Save fixture' : 'Set match'}</button>
   </form>
 }
 
@@ -191,7 +226,9 @@ export function MatchPanel({ match, formations, minute, addedTime = 0, substitut
   return <div className="match-panel">
     <div className="match-metadata">
       <div>{match.week ? `MW ${match.week} · ` : ''}{dateLabel(match.kickoff)}</div>
-      <small>{match.officialUrl ? <a href={match.officialUrl} target="_blank" rel="noreferrer">Match centre <ExternalLink size={12} /></a> : match.source}</small>
+      <small>{match.officialUrl
+        ? <>{match.source !== match.officialUrl && <>{match.source} · </>}<a href={match.officialUrl} target="_blank" rel="noreferrer">Match centre <ExternalLink size={12} /></a></>
+        : match.source}</small>
     </div>
     {(match.home.xi.length || match.away.xi.length) > 0 && <div className="match-clock">
       <label>Match state<select aria-label="Match state" value={`${minute}:${addedTime}`} onChange={(event) => {

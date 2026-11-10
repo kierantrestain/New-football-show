@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { KeyboardEvent, PointerEvent } from 'react'
 import { BoardVisual, getBallPoint, getBoardBounds, getVisibleBounds } from './BoardVisual'
 import type { BoardSelection } from './BoardVisual'
@@ -49,6 +49,10 @@ type Gesture = GestureMode & {
 
 const emptySelection: BoardSelection = { players: [] }
 const arrowKinds = new Set<Mark['kind']>(['run', 'pass', 'carry'])
+const markNames: Record<Mark['kind'], string> = {
+  run: 'Run arrow', pass: 'Pass arrow', carry: 'Carry arrow', freehand: 'Freehand drawing',
+  line: 'Line', zone: 'Zone', highlight: 'Highlight',
+}
 let markSequence = 0
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
@@ -81,6 +85,17 @@ function constrainedDelta(points: Point[], delta: Point, bounds: Bounds): Point 
     x: minX <= maxX ? clamp(delta.x, minX, maxX) : 0,
     y: minY <= maxY ? clamp(delta.y, minY, maxY) : 0,
   }
+}
+
+function visibleMarks(scene: Scene, bounds: Bounds) {
+  if (!scene.showAnnotations) return []
+  return scene.marks.filter(mark => {
+    const points = mark.control ? [...mark.points, mark.control] : mark.points
+    return points.some(point => point.x >= bounds.x)
+      && points.some(point => point.x <= bounds.x + bounds.width)
+      && points.some(point => point.y >= bounds.y)
+      && points.some(point => point.y <= bounds.y + bounds.height)
+  })
 }
 
 function eventPoint(event: PointerEvent<SVGSVGElement>): Point | undefined {
@@ -249,6 +264,16 @@ export function BoardEditor({ scene, tool, options, onCommit, resetKey, onSelect
   const [preview, setPreview] = useState<Scene>()
   const [marquee, setMarquee] = useState<Bounds>()
   const interaction = useRef<Gesture | null>(null)
+  const instructionsId = useId()
+  const activeSelection = tool === 'select' || (tool === 'ball' && selection.ball) ? selection : emptySelection
+  const selectedPlayer = activeSelection.players.length === 1
+    ? scene.players.find(player => player.id === activeSelection.players[0]) : undefined
+  const selectedMark = scene.marks.find(mark => mark.id === activeSelection.annotation)
+  const selectionStatus = selectedPlayer
+    ? `Selected ${selectedPlayer.number}, ${selectedPlayer.name}${scene.ball?.playerId === selectedPlayer.id ? ', with the ball' : ''}.`
+    : activeSelection.players.length > 1 ? `${activeSelection.players.length} players selected.`
+      : selectedMark ? `${markNames[selectedMark.kind]} selected.`
+        : activeSelection.ball ? 'Ball selected.' : 'No object selected.'
 
   function resetGesture() {
     interaction.current = null
@@ -260,6 +285,10 @@ export function BoardEditor({ scene, tool, options, onCommit, resetKey, onSelect
     resetGesture()
     setSelection(emptySelection)
   }, [scene.id, resetKey])
+
+  useEffect(() => {
+    if (interaction.current) resetGesture()
+  }, [tool])
 
   useEffect(() => {
     if (interaction.current && interaction.current.base !== scene) resetGesture()
@@ -275,8 +304,8 @@ export function BoardEditor({ scene, tool, options, onCommit, resetKey, onSelect
   }, [scene])
 
   useEffect(() => {
-    onSelectionChange?.(selection)
-  }, [selection, onSelectionChange])
+    onSelectionChange?.(activeSelection)
+  }, [activeSelection, onSelectionChange])
 
   function begin(event: PointerEvent<SVGSVGElement>) {
     if (interaction.current || !event.isPrimary || event.button !== 0 || (scene.image && tool === 'ball')) return
@@ -431,10 +460,40 @@ export function BoardEditor({ scene, tool, options, onCommit, resetKey, onSelect
       return
     }
     if (event.metaKey || event.ctrlKey || event.altKey || interaction.current) return
-    const mark = scene.marks.find(item => item.id === selection.annotation)
+    const visible = getVisibleBounds(scene)
+    if (event.key === 'Enter' && tool === 'select') {
+      const players = scene.image ? [] : scene.players.filter(player => within(player.point, visible))
+      const marks = visibleMarks(scene, visible)
+      const ball = scene.image ? null : getBallPoint(scene.ball, scene.players)
+      const choices: BoardSelection[] = [
+        ...players.map(player => ({ players: [player.id] })),
+        ...marks.map(mark => ({ players: [], annotation: mark.id })),
+        ...(ball && within(ball, visible) ? [{ players: [], ball: true }] : []),
+      ]
+      if (!choices.length) return
+      const index = choices.findIndex(choice => choice.annotation
+        ? choice.annotation === selection.annotation
+        : choice.ball ? selection.ball
+          : choice.players[0] === selection.players[0])
+      const direction = event.shiftKey ? -1 : 1
+      const start = index < 0 && event.shiftKey ? 0 : index
+      setSelection(choices[(start + direction + choices.length) % choices.length])
+      event.preventDefault()
+      return
+    }
+    if (event.key === ' ' && selectedPlayer && !scene.image) {
+      event.preventDefault()
+      if (event.repeat) return
+      const current = getBallPoint(scene.ball, scene.players)
+      const ball = current && scene.ball?.playerId === selectedPlayer.id
+        ? { point: current }
+        : { playerId: selectedPlayer.id, point: selectedPlayer.point }
+      onCommit({ ...scene, ball })
+      return
+    }
     if (event.key === 'Backspace' || event.key === 'Delete') {
-      if (mark) onCommit({ ...scene, marks: scene.marks.filter(item => item.id !== mark.id) })
-      else if (selection.ball && scene.ball) onCommit({ ...scene, ball: null })
+      if (selectedMark) onCommit({ ...scene, marks: scene.marks.filter(item => item.id !== selectedMark.id) })
+      else if (activeSelection.ball && scene.ball) onCommit({ ...scene, ball: null })
       else return
       setSelection(emptySelection)
       event.preventDefault()
@@ -449,28 +508,39 @@ export function BoardEditor({ scene, tool, options, onCommit, resetKey, onSelect
     const delta = directions[event.key]
     if (!delta) return
     const bounds = getBoardBounds(scene)
-    const ball = selection.ball ? getBallPoint(scene.ball, scene.players) : null
-    if (selection.players.length) onCommit(movePlayers(scene, selection.players, delta, getVisibleBounds(scene)))
-    else if (mark) onCommit(replaceMark(scene, translateMark(mark, delta, bounds)))
-    else if (ball) onCommit({ ...scene, ball: { point: constrain(offset(ball, delta), bounds) } })
+    const ball = activeSelection.ball ? getBallPoint(scene.ball, scene.players) : null
+    if (activeSelection.players.length) onCommit(movePlayers(scene, activeSelection.players, delta, visible))
+    else if (selectedMark) onCommit(replaceMark(scene, translateMark(selectedMark, delta, bounds)))
+    else if (ball) onCommit({ ...scene, ball: { point: constrain(offset(ball, delta), visible) } })
     else return
     event.preventDefault()
   }
 
   return (
-    <BoardVisual
-      scene={preview ?? scene}
-      selection={tool === 'select' || tool === 'ball' ? selection : emptySelection}
-      marquee={marquee}
-      className={`board-editor board-editor--${tool}`}
-      aria-label={scene.image ? 'Still image tactics editor' : 'Pitch tactics editor'}
-      tabIndex={0}
-      onPointerDown={begin}
-      onPointerMove={event => update(event, false)}
-      onPointerUp={event => update(event, true)}
-      onPointerCancel={cancel}
-      onLostPointerCapture={cancel}
-      onKeyDown={keyDown}
-    />
+    <>
+      <BoardVisual
+        scene={preview ?? scene}
+        selection={activeSelection}
+        marquee={marquee}
+        className={`board-editor board-editor--${tool}`}
+        role="application"
+        aria-label={scene.image ? 'Still image tactics editor' : 'Pitch tactics editor'}
+        aria-describedby={instructionsId}
+        tabIndex={0}
+        onPointerDown={begin}
+        onPointerMove={event => update(event, false)}
+        onPointerUp={event => update(event, true)}
+        onPointerCancel={cancel}
+        onLostPointerCapture={cancel}
+        onKeyDown={keyDown}
+      />
+      <span className="board-editor-a11y" id={instructionsId}>
+        In Select mode, use Enter or Shift and Enter to select the next or previous object.
+        Arrow keys move it. Hold Shift for larger moves. Delete removes a selected annotation or ball.
+        {!scene.image && ' Space attaches or detaches the ball on the selected player.'}
+        {' Escape clears the selection.'}
+      </span>
+      <span className="board-editor-a11y" role="status" aria-atomic="true">{selectionStatus}</span>
+    </>
   )
 }
