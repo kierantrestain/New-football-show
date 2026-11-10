@@ -38,3 +38,19 @@ test('board import rejects remote image URLs and broken scene selections', () =>
   broken.board.activeScene = 'missing'
   assert.throws(() => parseBoardFile(broken, 'imported', 2), /scene order or selection/)
 })
+
+test('board file preserves hidden movement targets, shape setting, and measured distances', () => {
+  const shape: Scene = {
+    ...still,
+    image: undefined,
+    shapeTeams: 'both',
+    motionTargets: {},
+    marks: [{ id: 'measure', kind: 'distance', colour: '#ff7373', style: 'solid',
+      points: [{ x: 80, y: 100 }, { x: 180, y: 150 }] }],
+  }
+  const saved: Board = { ...board, scenes: [shape], activeScene: shape.id }
+  const restored = parseBoardFile(JSON.parse(serialiseBoard(saved)), 'restored', 5)
+  assert.equal(restored.scenes[0].shapeTeams, 'both')
+  assert.deepEqual(restored.scenes[0].motionTargets, {})
+  assert.deepEqual(restored.scenes[0].marks, shape.marks.map(mark => ({ ...mark, control: undefined })))
+})
